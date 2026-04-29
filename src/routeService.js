@@ -91,88 +91,112 @@ async function fetchVietmapTolls(coordinates) {
   const apiKey = process.env.VIETMAP_API_KEY;
   if (!apiKey || !coordinates || coordinates.length < 2) return null;
 
-  // Giữ lại tối đa 600 điểm để đảm bảo mật độ cao (khoảng 500m - 1km mỗi điểm), tránh lỗi map-matching
-  const MAX_TOTAL_POINTS = 600;
-  const step = Math.ceil(coordinates.length / MAX_TOTAL_POINTS);
+  // Để Vietmap hiểu đây là MỘT chuyến đi liền mạch và tính đúng giá trọn tuyến,
+  // chúng ta BẮT BUỘC phải gửi toàn bộ lộ trình trong 1 request duy nhất.
+  // Giới hạn của API là 200 điểm, ta dùng 180 điểm để an toàn và dàn đều tọa độ.
+  const MAX_POINTS = 180;
+  const step = Math.ceil(coordinates.length / MAX_POINTS);
   const sampled = coordinates.filter((_, i) => i % step === 0);
   const lastCoord = coordinates[coordinates.length - 1];
   if (JSON.stringify(sampled[sampled.length - 1]) !== JSON.stringify(lastCoord)) {
     sampled.push(lastCoord);
   }
 
-  // Chia nhỏ thành các chunk (mỗi chunk max 140 điểm) để không vượt quá giới hạn 200 của Vietmap
-  const CHUNK_SIZE = 140;
-  const chunks = [];
-  for (let i = 0; i < sampled.length; i += (CHUNK_SIZE - 1)) {
-    let chunk = sampled.slice(i, i + CHUNK_SIZE);
-    if (chunk.length >= 2) chunks.push(chunk);
-  }
+  console.log(`[Vietmap Tolls] Sending 1 continuous request with ${sampled.length} points to preserve trip continuity`);
 
-  console.log(`[Vietmap Tolls] Splitting ${sampled.length} points into ${chunks.length} chunks`);
+  const url = `https://maps.vietmap.vn/api/route-tolls?api-version=1.1&apikey=${apiKey}&vehicle=1`;
 
   try {
-    const chunkPromises = chunks.map(chunk => {
-      const url = `https://maps.vietmap.vn/api/route-tolls?api-version=1.1&apikey=${apiKey}&vehicle=1`;
-      return fetchWithTimeout(url, 10000, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(chunk)
-      }).then(res => res.ok ? res.json() : null).catch(() => null);
+    const res = await fetchWithTimeout(url, 12000, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(sampled)
     });
 
-    const results = await Promise.all(chunkPromises);
+    if (!res.ok) {
+      console.warn(`[Vietmap Tolls] HTTP ${res.status}`);
+      return null;
+    }
     
-    let rawTolls = [];
-    results.forEach(res => {
-      if (res && res.tolls) {
-        rawTolls.push(...res.tolls);
-      }
-    });
-
-    let finalTolls = [];
-    let i = 0;
-
-    while (i < rawTolls.length) {
-      const t = rawTolls[i];
-      
-      // Deduplicate artifacts: if exact same name/address and not an entry, skip it.
-      if (finalTolls.length > 0) {
-        const lastToll = finalTolls[finalTolls.length - 1];
+    const data = await res.json();
+    let rawTolls = data.tolls || [];
+    
+    // ─── Lớp 1: Khử trùng lặp liền kề sơ bộ (Raw Deduplication) ───
+    // Dù không dùng chunk, ta vẫn nên khử các trạm bị lặp liên tiếp do lỗi Map-Matching (vd: trạm Km 54+000 xuất hiện 5 lần)
+    let uniqueTolls = [];
+    rawTolls.forEach(t => {
+      if (uniqueTolls.length > 0) {
+        const lastToll = uniqueTolls[uniqueTolls.length - 1];
         if (lastToll.name === t.name && lastToll.address === t.address && t.type !== 'entry') {
-          i++;
-          continue;
+          return; // Bỏ qua trạm lặp
         }
       }
+      uniqueTolls.push(t);
+    });
 
-      if (t.type === 'entry') {
-        let furthestExitIdx = -1;
-        for (let j = rawTolls.length - 1; j > i; j--) {
-          const exitCandidate = rawTolls[j];
-          if (exitCandidate.type === 'exit' && exitCandidate.prices && exitCandidate.prices[t.id] !== undefined) {
-            furthestExitIdx = j;
-            break;
+    // ─── Lớp 2: Quét trạm ảo liền kề (Adjacency Cleanup) ───
+    let cleanedTolls = [];
+    let i = 0;
+    while (i < uniqueTolls.length) {
+      if (i < uniqueTolls.length - 1) {
+        const t1 = uniqueTolls[i];
+        const t2 = uniqueTolls[i+1];
+        if (t1.name === t2.name && t1.address === t2.address) {
+          const t1IsEntry = t1.type === 'entry';
+          const t2IsEntry = t2.type === 'entry';
+          const t1IsExitOrPaid = t1.type === 'exit' || (t1.price && t1.price > 0);
+          const t2IsExitOrPaid = t2.type === 'exit' || (t2.price && t2.price > 0);
+          
+          if ((t1IsExitOrPaid && t2IsEntry) || (t1IsEntry && t2IsExitOrPaid)) {
+            console.log(`[Vietmap Tolls] Artifact pair removed: ${t1.name}`);
+            i += 2; // Bỏ qua cả hai trạm ảo
+            continue;
           }
         }
-        
-        if (furthestExitIdx !== -1) {
-          const trueExit = rawTolls[furthestExitIdx];
-          const actualPrice = trueExit.prices[t.id];
-          
-          finalTolls.push({...t, price: 0});
-          finalTolls.push({...trueExit, price: actualPrice});
-          
-          i = furthestExitIdx + 1; 
-        } else {
-          finalTolls.push({...t, price: 0});
-          i++;
+      }
+      cleanedTolls.push(uniqueTolls[i]);
+      i++;
+    }
+
+    // ─── Lớp 3: Tìm trạm Ra xa nhất (Furthest Exit Chain) ───
+    let finalTolls = [];
+    i = 0;
+    while (i < cleanedTolls.length) {
+      const t = cleanedTolls[i];
+
+      let furthestExitIdx = -1;
+      // Dò tìm trạm Ra xa nhất kéo dài chuỗi từ trạm hiện tại
+      for (let j = cleanedTolls.length - 1; j > i; j--) {
+        const exitCandidate = cleanedTolls[j];
+        if (exitCandidate.type === 'exit' && exitCandidate.prices && exitCandidate.prices[t.id] !== undefined) {
+          furthestExitIdx = j;
+          break;
         }
+      }
+      
+      if (furthestExitIdx !== -1) {
+        const trueExit = cleanedTolls[furthestExitIdx];
+        const actualPrice = trueExit.prices[t.id];
+        
+        // Chỉ thêm t nếu nó chưa được thêm ở cuối chuỗi trước đó
+        if (finalTolls.length === 0 || finalTolls[finalTolls.length - 1].id !== t.id) {
+           finalTolls.push({...t, price: t.type === 'entry' ? 0 : (t.price || 0)});
+        }
+        
+        finalTolls.push({...trueExit, price: actualPrice});
+        
+        // Nhảy đến trạm Ra xa nhất để tiếp tục nối chuỗi từ đó
+        i = furthestExitIdx; 
       } else {
-        finalTolls.push(t);
+        // Trạm không tìm được cặp (unpaired toll)
+        if (finalTolls.length === 0 || finalTolls[finalTolls.length - 1].id !== t.id) {
+           finalTolls.push(t);
+        }
         i++;
       }
     }
 
-    console.log(`[Vietmap Tolls] Found ${finalTolls.length} valid tolls (cleaned from ${rawTolls.length} raw)`);
+    console.log(`[Vietmap Tolls] Found ${finalTolls.length} valid tolls`);
     return finalTolls; 
   } catch (e) {
     console.warn("[Vietmap Tolls Error]", e.message);
@@ -243,7 +267,7 @@ function parseMapboxRoute(route, normalDuration, vietmapTolls = null) {
 
 // ─── Fetch Single Route ──────────────────────────────────────────────────
 async function fetchRoute(origin, dest, avoid = "") {
-  const key = `route:mb:v7:${origin}|${dest}|${avoid}`;
+  const key = `route:mb:v10:${origin}|${dest}|${avoid}`;
   const cached = await cacheGet(key);
   if (cached) return cached;
 
@@ -294,50 +318,9 @@ async function fetchRoute(origin, dest, avoid = "") {
   return result;
 }
 
-// ─── Douglas-Peucker Simplification ─────────────────────────────────────────
-function simplifyGeometry(points, tolerance) {
-  if (points.length <= 2) return points;
-  let maxDistance = 0;
-  let index = 0;
-  const end = points.length - 1;
-
-  for (let i = 1; i < end; i++) {
-    const d = pointLineDistance(points[i], points[0], points[end]);
-    if (d > maxDistance) {
-      maxDistance = d;
-      index = i;
-    }
-  }
-
-  if (maxDistance > tolerance) {
-    const left = simplifyGeometry(points.slice(0, index + 1), tolerance);
-    const right = simplifyGeometry(points.slice(index), tolerance);
-    return left.slice(0, left.length - 1).concat(right);
-  } else {
-    return [points[0], points[end]];
-  }
-}
-
-function pointLineDistance(p, a, b) {
-  const dx = b[0] - a[0];
-  const dy = b[1] - a[1];
-  if (dx === 0 && dy === 0) {
-    const px = p[0] - a[0];
-    const py = p[1] - a[1];
-    return Math.sqrt(px * px + py * py);
-  }
-  const t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy);
-  const tClamped = Math.max(0, Math.min(1, t));
-  const closestX = a[0] + tClamped * dx;
-  const closestY = a[1] + tClamped * dy;
-  const px = p[0] - closestX;
-  const py = p[1] - closestY;
-  return Math.sqrt(px * px + py * py);
-}
-
 // ─── Fetch Alternative Routes ────────────────────────────────────────────
 async function fetchAlternatives(origin, dest) {
-  const key = `alt:mb:v7:${origin}|${dest}`;
+  const key = `alt:mb:v10:${origin}|${dest}`;
   const cached = await cacheGet(key);
   if (cached) return cached;
 
@@ -362,17 +345,7 @@ async function fetchAlternatives(origin, dest) {
     const summary = r.legs[0]?.summary || "Unknown";
     if (r.geometry && r.geometry.coordinates) {
       let coords = r.geometry.coordinates;
-      let tolerance = 0.0001; // ~10m
-      let simplified = simplifyGeometry(coords, tolerance);
-      
-      // Tăng dần tolerance cho đến khi điểm <= 150 để thỏa mãn giới hạn API Vietmap
-      while (simplified.length > 150 && tolerance < 0.1) {
-        tolerance *= 1.5;
-        simplified = simplifyGeometry(coords, tolerance);
-      }
-      
-      console.log(`[DP Simplification] ${coords.length} -> ${simplified.length} points (tol: ${tolerance})`);
-      vt = await fetchVietmapTolls(simplified);
+      vt = await fetchVietmapTolls(coords);
       console.log(`[Vietmap Tolls] Done for: ${summary}, Found: ${vt?.length || 0}`);
     }
     return parseMapboxRoute(r, normalDuration, vt);
