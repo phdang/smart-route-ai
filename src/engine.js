@@ -6,9 +6,10 @@
  */
 export function ciLabel(ci) {
   if (ci < 1.15) return "🟢 Thông thoáng";
-  if (ci < 1.4)  return "🟡 Hơi đông";
-  if (ci < 1.7)  return "🟠 Kẹt trung bình";
-  return "🔴 Kẹt nặng";
+  if (ci < 1.35) return "🟡 Hơi đông";
+  if (ci < 1.6) return "🟠 Kẹt trung bình";
+  if (ci < 2.0) return "🔴 Kẹt nặng";
+  return "🚨 Kẹt rất nặng";
 }
 
 /**
@@ -30,14 +31,15 @@ export function ciLabel(ci) {
  */
 
 const W_TIME = 0.70;
-const W_CI   = 0.20;
+const W_CI = 0.20;
 const W_COST = 0.10;
 
 // Raw score (used when there's no group for comparison — always > 0)
 export function score(route) {
-  const ciPenalty = Math.max(0, route.ci - 1); // CI penalty >= 0
-  return route.eta * (1 + ciPenalty * 0.8);
+  const ciPenalty = Math.max(0, route.ci - 1);
+  return route.eta * (1 + ciPenalty * 1.2);
 }
+
 
 /**
  * Normalize and calculate composite score for a group of routes.
@@ -50,12 +52,12 @@ export function scoreGroup(routes) {
     return routes;
   }
 
-  const etas  = routes.map((r) => r.eta);
-  const cis   = routes.map((r) => r.ci);
+  const etas = routes.map((r) => r.eta);
+  const cis = routes.map((r) => r.ci);
   const costs = routes.map((r) => r.totalCost || 0);
 
-  const minEta  = Math.min(...etas),  maxEta  = Math.max(...etas);
-  const minCi   = Math.min(...cis),   maxCi   = Math.max(...cis);
+  const minEta = Math.min(...etas), maxEta = Math.max(...etas);
+  const minCi = Math.min(...cis), maxCi = Math.max(...cis);
   const minCost = Math.min(...costs), maxCost = Math.max(...costs);
 
   const norm = (val, min, max) =>
@@ -65,7 +67,7 @@ export function scoreGroup(routes) {
     ...r,
     compositeScore:
       W_TIME * norm(r.eta, minEta, maxEta) +
-      W_CI   * norm(r.ci,  minCi,  maxCi)  +
+      W_CI * norm(r.ci, minCi, maxCi) +
       W_COST * norm(r.totalCost || 0, minCost, maxCost),
   }));
 }

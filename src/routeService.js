@@ -17,12 +17,12 @@ const TRAFFIC_REFS = {
   central: "Ngã Năm, Đà Nẵng",
 };
 const NORTH_KEYWORDS = ["hà nội", "hanoi", "hải phòng", "quảng ninh", "ninh bình",
-                        "nam định", "thái bình", "bắc", "lạng sơn", "lào cai"];
+  "nam định", "thái bình", "bắc", "lạng sơn", "lào cai"];
 const CENTRAL_KEYWORDS = ["đà nẵng", "huế", "quảng nam", "quảng ngãi", "bình định", "phú yên"];
 
 export function pickTrafficRef(location) {
   const lower = location.toLowerCase();
-  if (NORTH_KEYWORDS.some((k) => lower.includes(k)))   return TRAFFIC_REFS.north;
+  if (NORTH_KEYWORDS.some((k) => lower.includes(k))) return TRAFFIC_REFS.north;
   if (CENTRAL_KEYWORDS.some((k) => lower.includes(k))) return TRAFFIC_REFS.central;
   return TRAFFIC_REFS.south;
 }
@@ -36,7 +36,7 @@ async function geocode(query) {
   // Default priority for results near HCMC (106.660172, 10.762622)
   const proximity = "106.660172,10.762622";
   const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${MAPBOX_TOKEN}&limit=1&country=vn&proximity=${proximity}`;
-  
+
   const res = await fetch(url);
   const data = await res.json();
 
@@ -68,13 +68,13 @@ async function fetchVietmapRoute(startCoords, endCoords) {
 
   // Vietmap uses lat,lng
   const url = `https://maps.vietmap.vn/api/route/v3?apikey=${apiKey}&point=${startCoords[1]},${startCoords[0]}&point=${endCoords[1]},${endCoords[0]}&vehicle=car`;
-  
+
   try {
     const res = await fetchWithTimeout(url, 5000);
     if (!res.ok) return null;
     const data = await res.json();
     if (data.code !== "OK" || !data.paths) return null;
-    
+
     return {
       distance: (data.paths[0].distance / 1000).toFixed(1) + " km",
       time: Math.round(data.paths[0].time / 1000 / 60), // ms to minutes
@@ -117,10 +117,10 @@ async function fetchVietmapTolls(coordinates) {
       console.warn(`[Vietmap Tolls] HTTP ${res.status}`);
       return null;
     }
-    
+
     const data = await res.json();
     let rawTolls = data.tolls || [];
-    
+
     // ─── Lớp 1: Khử trùng lặp liền kề sơ bộ (Raw Deduplication) ───
     // Dù không dùng chunk, ta vẫn nên khử các trạm bị lặp liên tiếp do lỗi Map-Matching (vd: trạm Km 54+000 xuất hiện 5 lần)
     let uniqueTolls = [];
@@ -140,13 +140,13 @@ async function fetchVietmapTolls(coordinates) {
     while (i < uniqueTolls.length) {
       if (i < uniqueTolls.length - 1) {
         const t1 = uniqueTolls[i];
-        const t2 = uniqueTolls[i+1];
+        const t2 = uniqueTolls[i + 1];
         if (t1.name === t2.name && t1.address === t2.address) {
           const t1IsEntry = t1.type === 'entry';
           const t2IsEntry = t2.type === 'entry';
           const t1IsExitOrPaid = t1.type === 'exit' || (t1.price && t1.price > 0);
           const t2IsExitOrPaid = t2.type === 'exit' || (t2.price && t2.price > 0);
-          
+
           if ((t1IsExitOrPaid && t2IsEntry) || (t1IsEntry && t2IsExitOrPaid)) {
             console.log(`[Vietmap Tolls] Artifact pair removed: ${t1.name}`);
             i += 2; // Bỏ qua cả hai trạm ảo
@@ -173,45 +173,71 @@ async function fetchVietmapTolls(coordinates) {
           break;
         }
       }
-      
+
       if (furthestExitIdx !== -1) {
         const trueExit = cleanedTolls[furthestExitIdx];
         const actualPrice = trueExit.prices[t.id];
-        
+
         // Chỉ thêm t nếu nó chưa được thêm ở cuối chuỗi trước đó
         if (finalTolls.length === 0 || finalTolls[finalTolls.length - 1].id !== t.id) {
-           finalTolls.push({...t, price: t.type === 'entry' ? 0 : (t.price || 0)});
+          finalTolls.push({ ...t, price: t.type === 'entry' ? 0 : (t.price || 0) });
         }
-        
-        finalTolls.push({...trueExit, price: actualPrice});
-        
+
+        finalTolls.push({ ...trueExit, price: actualPrice });
+
         // Nhảy đến trạm Ra xa nhất để tiếp tục nối chuỗi từ đó
-        i = furthestExitIdx; 
+        i = furthestExitIdx;
       } else {
         // Trạm không tìm được cặp (unpaired toll)
         if (finalTolls.length === 0 || finalTolls[finalTolls.length - 1].id !== t.id) {
-           finalTolls.push(t);
+          finalTolls.push(t);
         }
         i++;
       }
     }
 
     console.log(`[Vietmap Tolls] Found ${finalTolls.length} valid tolls`);
-    return finalTolls; 
+    return finalTolls;
   } catch (e) {
     console.warn("[Vietmap Tolls Error]", e.message);
     return null;
   }
 }
 
+// ─── Free-flow speed assumptions (km/h) ──────────────────────────────────
+const FREE_FLOW_SPEED = {
+  highway: 100,  // Cao tốc
+  national: 80,  // Quốc lộ
+  urban: 45,     // Đường đô thị TPHCM (thực tế thấp hơn lý thuyết)
+};
+
+/**
+ * Detect road type từ summary của Mapbox route.
+ * Mapbox trả về summary là tên đường chính của lộ trình.
+ */
+function detectRoadType(summary = "") {
+  const s = summary.toLowerCase();
+  if (/cao tốc|ct\s*\.|expressway|a1|hcm.?tl|tphcm.?tl/.test(s)) return "highway";
+  if (/quốc lộ|ql\s*\d|national|highway \d/.test(s)) return "national";
+  return "urban";
+}
+
+function calcFreeFlowCI(durationInTrafficSec, distanceMeters, summary) {
+  const roadType = detectRoadType(summary);
+  const speedKph = FREE_FLOW_SPEED[roadType];
+  const freeFlowSec = (distanceMeters / 1000 / speedKph) * 3600;
+  return freeFlowSec > 0 ? +(durationInTrafficSec / freeFlowSec).toFixed(2) : 1.0;
+}
+
+
 // ─── Parse route from Mapbox response ─────────────────────────────────────
 function parseMapboxRoute(route, normalDuration, vietmapTolls = null) {
   const eta = route.duration; // Seconds
   const normal = normalDuration || route.duration; // Seconds
-  const distance = (route.distance / 1000).toFixed(1) + " km";
+  const distance = route.distance
+  const summary = route.legs[0].summary || "Route"
 
-  const ci = normal > 0 ? +(eta / normal).toFixed(2) : 1.0;
-
+  const ci = calcFreeFlowCI(eta, distance, summary);
   let tollsCount = 0;
   let ferriesCount = 0;
 
@@ -254,13 +280,13 @@ function parseMapboxRoute(route, normalDuration, vietmapTolls = null) {
     normal: Math.round(normal / 60),
     ci,
     hasTrafficData: true,
-    summary: route.legs[0].summary || "Route",
-    distance,
+    distance: (distance / 1000).toFixed(1) + " km",
     tollsCount: finalTollsCount,
     ferriesCount,
     totalCost: finalTotalCost,
     tollsDetail,
     segments,
+    summary,
     regulationStatus: "Dữ liệu Mapbox" // Default value
   };
 }
@@ -275,9 +301,9 @@ async function fetchRoute(origin, dest, avoid = "") {
   const endCoords = await geocode(dest);
 
   const exclude = avoid === "highways" ? "&exclude=motorway" : "";
-  
+
   const trafficUrl = `https://api.mapbox.com/directions/v5/mapbox/driving-traffic/${startCoords.join(',')};${endCoords.join(',')}?access_token=${MAPBOX_TOKEN}&steps=true&geometries=geojson&overview=full${exclude}`;
-  
+
   const normalUrl = `https://api.mapbox.com/directions/v5/mapbox/driving/${startCoords.join(',')};${endCoords.join(',')}?access_token=${MAPBOX_TOKEN}${exclude}`;
 
   const [tRes, nRes] = await Promise.all([
@@ -300,7 +326,7 @@ async function fetchRoute(origin, dest, avoid = "") {
   ]);
 
   const result = parseMapboxRoute(route, normalDuration, vietmapTolls);
-  
+
   // Add regulation status
   result.regulationStatus = "Dữ liệu Mapbox";
   if (vietmapRegs) {
@@ -328,7 +354,7 @@ async function fetchAlternatives(origin, dest) {
   const endCoords = await geocode(dest);
 
   const url = `https://api.mapbox.com/directions/v5/mapbox/driving-traffic/${startCoords.join(',')};${endCoords.join(',')}?access_token=${MAPBOX_TOKEN}&steps=true&geometries=geojson&overview=full&alternatives=true`;
-  
+
   const res = await fetchWithTimeout(url);
   const data = await res.json();
 
@@ -379,9 +405,9 @@ export async function getBestRoute(origin, dest) {
 
 export async function getAreaTraffic(location) {
   const refDest = pickTrafficRef(location);
-  const isDowntown = location.toLowerCase().includes("bến thành") || 
-                     location.toLowerCase().includes("quận 1") || 
-                     location.toLowerCase().includes("trung tâm");
+  const isDowntown = location.toLowerCase().includes("bến thành") ||
+    location.toLowerCase().includes("quận 1") ||
+    location.toLowerCase().includes("trung tâm");
 
   const dest = isDowntown ? TRAFFIC_REFS.north : refDest;
   return await fetchRoute(location, dest);
@@ -395,7 +421,7 @@ export async function getDetailedCheck(origin, dest) {
 
   const primary = alternatives[0];
   console.log(`[Check Result] Primary: ${primary.summary}, tolls: ${primary.tollsCount}, cost: ${primary.totalCost}`);
-  
+
   const allRoutes = [...alternatives];
   if (!allRoutes.some(r => r.summary === avoidHighway.summary)) {
     allRoutes.push(avoidHighway);
@@ -407,7 +433,7 @@ export async function getDetailedCheck(origin, dest) {
   let best = alternates[0] ?? null;
   let llmAnalysis = null;
 
-  if (primary.ci >= 1.5 && alternates.length > 0) {
+  if (primary.ci >= 1.35 && alternates.length > 0) {
     const analysisResult = await analyzeRoutesWithGameTheory(primary, alternates);
     if (analysisResult) {
       llmAnalysis = analysisResult.game_theory_analysis;

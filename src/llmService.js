@@ -31,9 +31,9 @@ ${alternates
   .join("\n")}
 
 Analysis Requirements:
-1. Apply Minimax Regret strategy: Choose the route with the lowest worst-case regret.
-2. Consider Nash Equilibrium: Avoid routes where many drivers might flock (typically famous parallel roads).
-3. Consider financial costs as a component in the Payoff Matrix.
+1. Apply Game Theory (Minimax Regret & Variance Analysis): A congested route (high CI) carries high risk and variance—it could take much longer than the estimated ETA. A clear route (low CI), even if longer in distance and having a higher estimated ETA, offers certainty. Prioritize clear, longer routes over shorter but jammed routes to minimize worst-case travel time.
+2. Consider Herd Mentality & Nash Equilibrium: If route X is jammed, most drivers will predictably switch to the most obvious alternative route Y. This "herd mentality" will likely cause route Y to become congested as well (Secondary Congestion). You must anticipate this! Look for unconventional "third way" routes—routes that are less obvious and that other drivers are unlikely to think of. Choosing an unconventional route is the safest bet against sudden secondary traffic jams.
+3. Balance the Payoff Matrix: Weigh time certainty against financial costs (tolls/ferries).
 
 Language Rule:
 - If the input was in Vietnamese (or about Vietnam locations), provide "game_theory_analysis" in Vietnamese.
