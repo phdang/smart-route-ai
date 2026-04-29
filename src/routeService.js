@@ -222,11 +222,16 @@ function detectRoadType(summary = "") {
   return "urban";
 }
 
-function calcFreeFlowCI(durationInTrafficSec, distanceMeters, summary) {
+function calcFreeFlowCI(durationInTrafficSec, distanceMeters, summary, normalDurationSec) {
   const roadType = detectRoadType(summary);
   const speedKph = FREE_FLOW_SPEED[roadType];
-  const freeFlowSec = (distanceMeters / 1000 / speedKph) * 3600;
-  return freeFlowSec > 0 ? +(durationInTrafficSec / freeFlowSec).toFixed(2) : 1.0;
+  const theoreticalFreeFlowSec = (distanceMeters / 1000 / speedKph) * 3600;
+
+  // Choose the more realistic baseline: either the theoretical free flow or the historical normal.
+  // We use the larger value (slower time) to avoid labeling historical 'normal' traffic as 'congested'.
+  const baselineSec = Math.max(theoreticalFreeFlowSec, normalDurationSec || 0);
+
+  return baselineSec > 0 ? +(durationInTrafficSec / baselineSec).toFixed(2) : 1.0;
 }
 
 
@@ -237,7 +242,7 @@ function parseMapboxRoute(route, normalDuration, vietmapTolls = null) {
   const distance = route.distance
   const summary = route.legs[0].summary || "Route"
 
-  const ci = calcFreeFlowCI(eta, distance, summary);
+  const ci = calcFreeFlowCI(eta, distance, summary, normal);
   let tollsCount = 0;
   let ferriesCount = 0;
 
@@ -360,13 +365,13 @@ async function fetchAlternatives(origin, dest) {
 
   if (data.code !== "Ok") throw new Error(`Mapbox API: ${data.code}`);
 
-  const normalUrl = `https://api.mapbox.com/directions/v5/mapbox/driving/${startCoords.join(',')};${endCoords.join(',')}?access_token=${MAPBOX_TOKEN}`;
+  const normalUrl = `https://api.mapbox.com/directions/v5/mapbox/driving/${startCoords.join(',')};${endCoords.join(',')}?access_token=${MAPBOX_TOKEN}&alternatives=true`;
   const nRes = await fetch(normalUrl);
   const nData = await nRes.json();
   const normalDuration = nData.routes && nData.routes[0] ? nData.routes[0].duration : data.routes[0].duration;
 
   // Fetch Vietmap tolls for all alternative routes in parallel
-  const routesWithTolls = await Promise.all(data.routes.map(async (r) => {
+  const routesWithTolls = await Promise.all(data.routes.map(async (r, idx) => {
     let vt = null;
     const summary = r.legs[0]?.summary || "Unknown";
     if (r.geometry && r.geometry.coordinates) {
@@ -374,7 +379,12 @@ async function fetchAlternatives(origin, dest) {
       vt = await fetchVietmapTolls(coords);
       console.log(`[Vietmap Tolls] Done for: ${summary}, Found: ${vt?.length || 0}`);
     }
-    return parseMapboxRoute(r, normalDuration, vt);
+    
+    // Match normal duration by index if possible, fallback to first route's normal
+    const nRoute = nData.routes && nData.routes[idx] ? nData.routes[idx] : nData.routes[0];
+    const nDuration = nRoute ? nRoute.duration : r.duration;
+
+    return parseMapboxRoute(r, nDuration, vt);
   }));
 
   // Add regulation check for the primary alternative
