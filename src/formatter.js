@@ -70,7 +70,7 @@ export function formatCheckReply({ primary, best, alternates, llmAnalysis }, { o
         .join("\n")
     : "> *(Không có dữ liệu chi tiết)*";
 
-  // Alternative routes section (Only shown if jammed CI >= 1.5)
+  // Alternative routes section (Only shown if jammed CI >= 1.25)
   let altSection = "";
   if (isJammed) {
     const altLines = alternates.length

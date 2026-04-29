@@ -152,7 +152,7 @@ async function handleHelp(msg) {
 \`!help\` — Show this guide
 
 💡 *Bot supports natural language (Ex: !check from A to B)*
-💡 *Cache 5 mins • AI Game Theory triggered automatically when CI ≥ 1.5*
+💡 *Cache 5 mins • AI Game Theory triggered automatically when CI ≥ 1.25*
 `.trim());
 }
 
