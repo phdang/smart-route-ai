@@ -443,7 +443,7 @@ export async function getDetailedCheck(origin, dest) {
   let best = alternates[0] ?? null;
   let llmAnalysis = null;
 
-  if (primary.ci >= 1.35 && alternates.length > 0) {
+  if (primary.ci >= 1.25 && alternates.length > 0) {
     const analysisResult = await analyzeRoutesWithGameTheory(primary, alternates);
     if (analysisResult) {
       llmAnalysis = analysisResult.game_theory_analysis;

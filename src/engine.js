@@ -5,11 +5,11 @@
  * CI label based on standard thresholds (referenced from TomTom Traffic Index)
  */
 export function ciLabel(ci) {
-  if (ci < 1.15) return "🟢 Thông thoáng";
-  if (ci < 1.35) return "🟡 Hơi đông";
-  if (ci < 1.6) return "🟠 Kẹt trung bình";
-  if (ci < 2.0) return "🔴 Kẹt nặng";
-  return "🚨 Kẹt rất nặng";
+  if (ci < 1.10) return "🟢 Thông thoáng";
+  if (ci < 1.25) return "🟡 Hơi đông";
+  if (ci < 1.50) return "🟠 Đông xe";
+  if (ci < 1.85) return "🔴 Kẹt xe";
+  return "🚨 Kẹt nghiêm trọng";
 }
 
 /**

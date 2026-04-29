@@ -53,7 +53,7 @@ export function formatReply({ highway, alt, recommended }, { origin, dest }) {
 
 // ─── !check ───────────────────────────────────────────────────────────────
 export function formatCheckReply({ primary, best, alternates, llmAnalysis }, { origin, dest }) {
-  const isJammed = primary.ci >= 1.35;
+  const isJammed = primary.ci >= 1.25;
   const statusLine = isJammed
     ? `🚨 **Có kẹt xe!** ${ciLabel(primary.ci)} *(CI: ${primary.ci})*`
     : `✅ **Không kẹt xe.** ${ciLabel(primary.ci)} *(CI: ${primary.ci})*`;
