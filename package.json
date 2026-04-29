@@ -1,0 +1,17 @@
+{
+  "name": "traffic-bot",
+  "version": "1.0.0",
+  "description": "Discord bot tra cứu tình trạng giao thông real-time với Google Directions API",
+  "type": "module",
+  "main": "src/bot.js",
+  "scripts": {
+    "start": "node src/bot.js",
+    "dev": "node --watch src/bot.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "dotenv": "^16.4.5",
+    "ioredis": "^5.10.1",
+    "node-fetch": "^3.3.2"
+  }
+}
