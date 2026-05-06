@@ -33,7 +33,6 @@ async function geocode(query) {
   const cached = await cacheGet(cacheKey);
   if (cached) return cached;
 
-  // Default priority for results near HCMC (106.660172, 10.762622)
   const proximity = "106.660172,10.762622";
   const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${MAPBOX_TOKEN}&limit=1&country=vn&proximity=${proximity}`;
 
@@ -47,6 +46,67 @@ async function geocode(query) {
   const coords = data.features[0].center; // [lng, lat]
   await cacheSet(cacheKey, coords);
   return coords;
+}
+
+// ─── Resolve input (String or Coords) ─────────────────────────────────────
+async function getCoords(input) {
+  if (Array.isArray(input)) return input; // Already resolved
+  return await geocode(input);
+}
+
+// ─── Search Locations for Dropdown Menu ───────────────────────────────────
+export async function searchMapboxLocations(query) {
+  const proximity = "106.660172,10.762622";
+  const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${MAPBOX_TOKEN}&limit=5&country=vn&proximity=${proximity}`;
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!data.features) return [];
+    
+    return data.features.map(f => ({
+      label: f.text.substring(0, 100),
+      description: (f.place_name || "").substring(0, 100),
+      value: `mb:${f.center[0]},${f.center[1]}`
+    }));
+  } catch (e) {
+    return [];
+  }
+}
+
+export async function searchLocations(query) {
+  const apiKey = process.env.VIETMAP_API_KEY;
+  if (!apiKey) return searchMapboxLocations(query);
+
+  const url = `https://maps.vietmap.vn/api/search/v3?apikey=${apiKey}&text=${encodeURIComponent(query)}`;
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!data || data.length === 0) return searchMapboxLocations(query);
+    
+    // Return max 5 options
+    return data.slice(0, 5).map(item => ({
+      label: item.name.substring(0, 100) || query.substring(0, 100),
+      description: (item.address || item.display || "Địa điểm Việt Nam").substring(0, 100),
+      value: `vm:${item.ref_id}` // prefix to know it's vietmap
+    }));
+  } catch (e) {
+    return searchMapboxLocations(query);
+  }
+}
+
+export async function resolveLocationValue(value) {
+  if (value.startsWith("mb:")) {
+    const parts = value.replace("mb:", "").split(",");
+    return [parseFloat(parts[0]), parseFloat(parts[1])]; // [lng, lat]
+  } else if (value.startsWith("vm:")) {
+    const ref_id = value.replace("vm:", "");
+    const apiKey = process.env.VIETMAP_API_KEY;
+    const url = `https://maps.vietmap.vn/api/place/v3?apikey=${apiKey}&refid=${ref_id}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    return [data.lng, data.lat];
+  }
+  return null;
 }
 
 // ─── Fetch with Timeout ───────────────────────────────────────────────────
@@ -298,12 +358,15 @@ function parseMapboxRoute(route, normalDuration, vietmapTolls = null) {
 
 // ─── Fetch Single Route ──────────────────────────────────────────────────
 async function fetchRoute(origin, dest, avoid = "") {
-  const key = `route:mb:v10:${origin}|${dest}|${avoid}`;
+  // If origin/dest are arrays (coords), convert to string for cache key
+  const oKey = Array.isArray(origin) ? origin.join(',') : origin;
+  const dKey = Array.isArray(dest) ? dest.join(',') : dest;
+  const key = `route:mb:v10:${oKey}|${dKey}|${avoid}`;
   const cached = await cacheGet(key);
   if (cached) return cached;
 
-  const startCoords = await geocode(origin);
-  const endCoords = await geocode(dest);
+  const startCoords = await getCoords(origin);
+  const endCoords = await getCoords(dest);
 
   const exclude = avoid === "highways" ? "&exclude=motorway" : "";
 
@@ -351,12 +414,14 @@ async function fetchRoute(origin, dest, avoid = "") {
 
 // ─── Fetch Alternative Routes ────────────────────────────────────────────
 async function fetchAlternatives(origin, dest) {
-  const key = `alt:mb:v10:${origin}|${dest}`;
+  const oKey = Array.isArray(origin) ? origin.join(',') : origin;
+  const dKey = Array.isArray(dest) ? dest.join(',') : dest;
+  const key = `alt:mb:v10:${oKey}|${dKey}`;
   const cached = await cacheGet(key);
   if (cached) return cached;
 
-  const startCoords = await geocode(origin);
-  const endCoords = await geocode(dest);
+  const startCoords = await getCoords(origin);
+  const endCoords = await getCoords(dest);
 
   const url = `https://api.mapbox.com/directions/v5/mapbox/driving-traffic/${startCoords.join(',')};${endCoords.join(',')}?access_token=${MAPBOX_TOKEN}&steps=true&geometries=geojson&overview=full&alternatives=true`;
 
@@ -413,14 +478,15 @@ export async function getBestRoute(origin, dest) {
   return { highway, alt, recommended };
 }
 
-export async function getAreaTraffic(location) {
-  const refDest = pickTrafficRef(location);
-  const isDowntown = location.toLowerCase().includes("bến thành") ||
-    location.toLowerCase().includes("quận 1") ||
-    location.toLowerCase().includes("trung tâm");
+export async function getAreaTraffic(originInput, locationName) {
+  const nameToUse = locationName || (typeof originInput === 'string' ? originInput : "");
+  const refDest = pickTrafficRef(nameToUse);
+  const isDowntown = nameToUse.toLowerCase().includes("bến thành") ||
+    nameToUse.toLowerCase().includes("quận 1") ||
+    nameToUse.toLowerCase().includes("trung tâm");
 
   const dest = isDowntown ? TRAFFIC_REFS.north : refDest;
-  return await fetchRoute(location, dest);
+  return await fetchRoute(originInput, dest);
 }
 
 export async function getDetailedCheck(origin, dest) {

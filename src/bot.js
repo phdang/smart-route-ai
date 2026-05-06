@@ -1,8 +1,8 @@
 // src/bot.js
 import "dotenv/config";
-import { Client, GatewayIntentBits } from "discord.js";
+import { Client, GatewayIntentBits, ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
 import { initRedis } from "./cache.js";
-import { getBestRoute, getDetailedCheck, getAreaTraffic } from "./routeService.js";
+import { getBestRoute, getDetailedCheck, getAreaTraffic, searchLocations, resolveLocationValue } from "./routeService.js";
 import { parseRouteCommand, parseCheckCommand, parseTrafficCommand } from "./parser.js";
 import { formatReply, formatCheckReply, formatTrafficReply } from "./formatter.js";
 import { parseCommandWithAI } from "./llmService.js";
@@ -88,17 +88,56 @@ async function handleSmartCommand(msg) {
   // 3. Execute based on intent
   await msg.react("⏳");
   try {
-    if (intent === "route") {
-      const result = await getBestRoute(parsed.origin, parsed.dest);
-      const chunks = splitMessage(formatReply(result, parsed));
-      for (const chunk of chunks) await msg.reply(chunk);
-    } else if (intent === "check") {
-      const result = await getDetailedCheck(parsed.origin, parsed.dest);
-      const chunks = splitMessage(formatCheckReply(result, parsed));
-      for (const chunk of chunks) await msg.reply(chunk);
+    if (intent === "route" || intent === "check") {
+      const originLocations = await searchLocations(parsed.origin);
+      const destLocations = await searchLocations(parsed.dest);
+      
+      if (!originLocations || originLocations.length === 0 || !destLocations || destLocations.length === 0) {
+        return msg.reply("❌ Không tìm thấy một hoặc cả hai địa điểm.");
+      }
+
+      const row1 = new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId(`select_origin_${intent}`)
+          .setPlaceholder(`Chọn điểm đi cho "${parsed.origin}"`)
+          .addOptions(originLocations)
+      );
+
+      const row2 = new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId(`select_dest_${intent}`)
+          .setPlaceholder(`Chọn điểm đến cho "${parsed.dest}"`)
+          .addOptions(destLocations)
+      );
+
+      const row3 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`confirm_route_${intent}`)
+          .setLabel(`Xác nhận & Kiểm tra`)
+          .setStyle(ButtonStyle.Primary)
+      );
+
+      await msg.reply({ 
+        content: `Vui lòng xác nhận điểm đi và điểm đến cho lộ trình **${parsed.origin} → ${parsed.dest}**:`,
+        components: [row1, row2, row3] 
+      });
     } else if (intent === "traffic") {
-      const route = await getAreaTraffic(parsed.origin);
-      await msg.reply(formatTrafficReply(route, parsed.origin));
+      const locations = await searchLocations(parsed.origin);
+      if (!locations || locations.length === 0) {
+        return msg.reply("❌ Không tìm thấy địa điểm nào.");
+      }
+
+      const row = new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId('select_traffic_loc')
+          .setPlaceholder('Chọn địa điểm chính xác...')
+          .addOptions(locations)
+      );
+
+      await msg.reply({ 
+        content: `Vui lòng chọn địa điểm cho "${parsed.origin}":`,
+        components: [row] 
+      });
     } else if (intent === "help") {
       await handleHelp(msg);
     }
@@ -172,6 +211,95 @@ client.on("messageCreate", async (msg) => {
 
   // Handle all commands via smart filter
   return handleSmartCommand(msg);
+});
+
+// ─── Interaction handler for Select Menus and Buttons ─────────────────────
+client.on("interactionCreate", async (interaction) => {
+  if (interaction.channelId !== ALLOWED_CHANNEL_ID || interaction.user.id !== ALLOWED_USER_ID) return;
+
+  if (interaction.isStringSelectMenu()) {
+    if (interaction.customId === 'select_traffic_loc') {
+      await interaction.deferUpdate();
+      const value = interaction.values[0];
+
+      const selectedOption = interaction.message.components[0].components[0].options.find(o => o.value === value);
+      const locationName = selectedOption ? selectedOption.label : "Địa điểm đã chọn";
+
+      await interaction.editReply({ content: `⏳ Đang kiểm tra giao thông cho: **${locationName}**...`, components: [] });
+
+      try {
+        const coords = await resolveLocationValue(value);
+        if (!coords) {
+          return interaction.editReply({ content: "❌ Không thể lấy tọa độ của địa điểm này." });
+        }
+
+        const route = await getAreaTraffic(coords, locationName);
+        await interaction.editReply({ content: formatTrafficReply(route, locationName) });
+      } catch (e) {
+        console.error("[Traffic Select error]", e);
+        await interaction.editReply({ content: `⚠️ Lỗi: ${e.message}` });
+      }
+    } else if (interaction.customId.startsWith('select_origin_') || interaction.customId.startsWith('select_dest_')) {
+      const value = interaction.values[0];
+      const rowIdx = interaction.customId.startsWith('select_origin_') ? 0 : 1;
+      
+      const newComponents = [...interaction.message.components];
+      const selectMenu = newComponents[rowIdx].components[0];
+      
+      const updatedSelectMenu = StringSelectMenuBuilder.from(selectMenu);
+      updatedSelectMenu.setOptions(
+        selectMenu.options.map(opt => ({
+          ...opt,
+          default: opt.value === value
+        }))
+      );
+      
+      newComponents[rowIdx] = new ActionRowBuilder().addComponents(updatedSelectMenu);
+      await interaction.update({ components: newComponents });
+    }
+  } else if (interaction.isButton()) {
+    if (!interaction.customId.startsWith('confirm_route_')) return;
+    
+    const originSelect = interaction.message.components[0].components[0];
+    const destSelect = interaction.message.components[1].components[0];
+    
+    const originSelected = originSelect.options.find(o => o.default);
+    const destSelected = destSelect.options.find(o => o.default);
+    
+    if (!originSelected || !destSelected) {
+      return interaction.reply({ content: "⚠️ Vui lòng chọn CẢ điểm đi và điểm đến trước khi xác nhận!", ephemeral: true });
+    }
+    
+    const intent = interaction.customId.replace('confirm_route_', '');
+    
+    await interaction.update({ content: `⏳ Đang xử lý lộ trình từ **${originSelected.label}** đến **${destSelected.label}**...`, components: [] });
+    
+    try {
+      const originCoords = await resolveLocationValue(originSelected.value);
+      const destCoords = await resolveLocationValue(destSelected.value);
+      
+      const parsedFake = { origin: originSelected.label, dest: destSelected.label };
+      
+      if (intent === "route") {
+        const result = await getBestRoute(originCoords, destCoords);
+        const chunks = splitMessage(formatReply(result, parsedFake));
+        for (const [i, chunk] of chunks.entries()) {
+          if (i === 0) await interaction.editReply({ content: chunk });
+          else await interaction.followUp({ content: chunk });
+        }
+      } else if (intent === "check") {
+        const result = await getDetailedCheck(originCoords, destCoords);
+        const chunks = splitMessage(formatCheckReply(result, parsedFake));
+        for (const [i, chunk] of chunks.entries()) {
+          if (i === 0) await interaction.editReply({ content: chunk });
+          else await interaction.followUp({ content: chunk });
+        }
+      }
+    } catch (e) {
+      console.error("[Route Confirm error]", e);
+      await interaction.editReply({ content: `⚠️ Lỗi: ${e.message}` });
+    }
+  }
 });
 
 // ─── Startup ──────────────────────────────────────────────────────────────
