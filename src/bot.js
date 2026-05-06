@@ -219,13 +219,12 @@ client.on("interactionCreate", async (interaction) => {
 
   if (interaction.isStringSelectMenu()) {
     if (interaction.customId === 'select_traffic_loc') {
-      await interaction.deferUpdate();
       const value = interaction.values[0];
 
       const selectedOption = interaction.message.components[0].components[0].options.find(o => o.value === value);
       const locationName = selectedOption ? selectedOption.label : "Địa điểm đã chọn";
 
-      await interaction.editReply({ content: `⏳ Đang kiểm tra giao thông cho: **${locationName}**...`, components: [] });
+      await interaction.update({ content: `⏳ Đang kiểm tra giao thông cho: **${locationName}**...`, components: [] });
 
       try {
         const coords = await resolveLocationValue(value);
@@ -243,18 +242,20 @@ client.on("interactionCreate", async (interaction) => {
       const value = interaction.values[0];
       const rowIdx = interaction.customId.startsWith('select_origin_') ? 0 : 1;
       
-      const newComponents = [...interaction.message.components];
-      const selectMenu = newComponents[rowIdx].components[0];
+      const newComponents = interaction.message.components.map((row, index) => {
+        const actionRow = ActionRowBuilder.from(row);
+        if (index === rowIdx) {
+          const select = actionRow.components[0];
+          select.setOptions(
+            select.options.map(opt => ({
+              ...opt.data,
+              default: opt.data.value === value
+            }))
+          );
+        }
+        return actionRow;
+      });
       
-      const updatedSelectMenu = StringSelectMenuBuilder.from(selectMenu);
-      updatedSelectMenu.setOptions(
-        selectMenu.options.map(opt => ({
-          ...opt,
-          default: opt.value === value
-        }))
-      );
-      
-      newComponents[rowIdx] = new ActionRowBuilder().addComponents(updatedSelectMenu);
       await interaction.update({ components: newComponents });
     }
   } else if (interaction.isButton()) {

@@ -57,7 +57,7 @@ async function getCoords(input) {
 // ─── Search Locations for Dropdown Menu ───────────────────────────────────
 export async function searchMapboxLocations(query) {
   const proximity = "106.660172,10.762622";
-  const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${MAPBOX_TOKEN}&limit=5&country=vn&proximity=${proximity}`;
+  const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${MAPBOX_TOKEN}&limit=10&country=vn&proximity=${proximity}`;
   try {
     const res = await fetch(url);
     const data = await res.json();
@@ -83,8 +83,8 @@ export async function searchLocations(query) {
     const data = await res.json();
     if (!data || data.length === 0) return searchMapboxLocations(query);
     
-    // Return max 5 options
-    return data.slice(0, 5).map(item => ({
+    // Return max 10 options
+    return data.slice(0, 10).map(item => ({
       label: item.name.substring(0, 100) || query.substring(0, 100),
       description: (item.address || item.display || "Địa điểm Việt Nam").substring(0, 100),
       value: `vm:${item.ref_id}` // prefix to know it's vietmap
