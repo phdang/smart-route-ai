@@ -1,16 +1,28 @@
 // src/bot.js
 import "dotenv/config";
-import { Client, GatewayIntentBits, ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
+import {
+  Client,
+  GatewayIntentBits,
+  ActionRowBuilder,
+  StringSelectMenuBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+} from "discord.js";
 import { initRedis } from "./cache.js";
-import { getBestRoute, getDetailedCheck, getAreaTraffic, searchLocations, resolveLocationValue } from "./routeService.js";
+import {
+  getBestRoute,
+  getDetailedCheck,
+  getAreaTraffic,
+  searchLocations,
+  resolveLocationValue,
+} from "./routeService.js";
 import { parseRouteCommand, parseCheckCommand, parseTrafficCommand } from "./parser.js";
 import { formatReply, formatCheckReply, formatTrafficReply } from "./formatter.js";
 import { parseCommandWithAI } from "./llmService.js";
 
-const ALLOWED_USER_ID    = process.env.ALLOWED_USER_ID;
+const ALLOWED_USER_ID = process.env.ALLOWED_USER_ID;
 const ALLOWED_CHANNEL_ID = process.env.ALLOWED_CHANNEL_ID;
 
-// Fail fast if required variables are missing
 if (!ALLOWED_USER_ID || !ALLOWED_CHANNEL_ID) {
   console.error("[FATAL] Missing ALLOWED_USER_ID or ALLOWED_CHANNEL_ID in .env");
   process.exit(1);
@@ -29,122 +41,24 @@ const client = new Client({
 });
 
 // ─── Auth guard ───────────────────────────────────────────────────────────
-function isAllowed(msg) {
-  return (
-    msg.channelId === ALLOWED_CHANNEL_ID &&
-    msg.author.id === ALLOWED_USER_ID
-  );
+function isAllowedMsg(msg) {
+  return msg.channelId === ALLOWED_CHANNEL_ID && msg.author.id === ALLOWED_USER_ID;
+}
+function isAllowedInteraction(interaction) {
+  return interaction.user.id === ALLOWED_USER_ID;
 }
 
-// ─── Simple Rate Limit - Avoid Spam ───────────────────────────────────────
-const cooldowns = new Map(); // userId → timestamp
-const COOLDOWN_MS = 3000;   // 3 seconds between commands
+// ─── Rate Limit ───────────────────────────────────────────────────────────
+const cooldowns = new Map();
+const COOLDOWN_MS = 3000;
 
 function isOnCooldown(userId) {
   const last = cooldowns.get(userId);
-  if (!last) return false;
-  return Date.now() - last < COOLDOWN_MS;
+  return last && Date.now() - last < COOLDOWN_MS;
 }
 function setCooldown(userId) {
   cooldowns.set(userId, Date.now());
-  // Auto cleanup after 1 minute to prevent memory leak
   setTimeout(() => cooldowns.delete(userId), 60_000);
-}
-
-// ─── Smart Command Handling (Regex + AI Fallback) ────────────────────────
-async function handleSmartCommand(msg) {
-  const content = msg.content.trim();
-  
-  // 1. Try traditional regex first (fast & cheap)
-  let parsed = null;
-  let intent = null;
-
-  if (content.startsWith("!route")) {
-    intent = "route";
-    parsed = parseRouteCommand(content);
-  } else if (content.startsWith("!check")) {
-    intent = "check";
-    parsed = parseCheckCommand(content);
-  } else if (content.startsWith("!traffic")) {
-    intent = "traffic";
-    parsed = parseTrafficCommand(content);
-  }
-
-  // 2. If regex fails -> Ask AI to understand natural language
-  if (!parsed && (content.startsWith("!check") || content.startsWith("!route") || content.startsWith("!traffic"))) {
-    await msg.react("🤖"); // AI is processing
-    const aiResult = await parseCommandWithAI(content);
-    if (aiResult && aiResult.intent !== "unknown") {
-      intent = aiResult.intent;
-      parsed = { origin: aiResult.origin, dest: aiResult.destination };
-    }
-  }
-
-  if (!parsed) {
-    if (content.startsWith("!help")) return handleHelp(msg);
-    return msg.reply("❓ I didn't understand that. Try standard syntax: `!check A → B` or describe it clearly.");
-  }
-
-  // 3. Execute based on intent
-  await msg.react("⏳");
-  try {
-    if (intent === "route" || intent === "check") {
-      const originLocations = await searchLocations(parsed.origin);
-      const destLocations = await searchLocations(parsed.dest);
-      
-      if (!originLocations || originLocations.length === 0 || !destLocations || destLocations.length === 0) {
-        return msg.reply("❌ Không tìm thấy một hoặc cả hai địa điểm.");
-      }
-
-      const row1 = new ActionRowBuilder().addComponents(
-        new StringSelectMenuBuilder()
-          .setCustomId(`select_origin_${intent}`)
-          .setPlaceholder(`Chọn điểm đi cho "${parsed.origin}"`)
-          .addOptions(originLocations)
-      );
-
-      const row2 = new ActionRowBuilder().addComponents(
-        new StringSelectMenuBuilder()
-          .setCustomId(`select_dest_${intent}`)
-          .setPlaceholder(`Chọn điểm đến cho "${parsed.dest}"`)
-          .addOptions(destLocations)
-      );
-
-      const row3 = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`confirm_route_${intent}`)
-          .setLabel(`Xác nhận & Kiểm tra`)
-          .setStyle(ButtonStyle.Primary)
-      );
-
-      await msg.reply({ 
-        content: `Vui lòng xác nhận điểm đi và điểm đến cho lộ trình **${parsed.origin} → ${parsed.dest}**:`,
-        components: [row1, row2, row3] 
-      });
-    } else if (intent === "traffic") {
-      const locations = await searchLocations(parsed.origin);
-      if (!locations || locations.length === 0) {
-        return msg.reply("❌ Không tìm thấy địa điểm nào.");
-      }
-
-      const row = new ActionRowBuilder().addComponents(
-        new StringSelectMenuBuilder()
-          .setCustomId('select_traffic_loc')
-          .setPlaceholder('Chọn địa điểm chính xác...')
-          .addOptions(locations)
-      );
-
-      await msg.reply({ 
-        content: `Vui lòng chọn địa điểm cho "${parsed.origin}":`,
-        components: [row] 
-      });
-    } else if (intent === "help") {
-      await handleHelp(msg);
-    }
-  } catch (e) {
-    console.error(`[${intent} error]`, e.message);
-    await msg.reply(`⚠️ Error: ${e.message}`);
-  }
 }
 
 // ─── Utility: Split long messages ─────────────────────────────────────────
@@ -155,7 +69,6 @@ function splitMessage(text, limit = 1800) {
   let current = "";
   for (const line of lines) {
     if (line.length > limit) {
-      // Emergency split for very long single lines
       if (current) chunks.push(current);
       chunks.push(line.substring(0, limit));
       current = line.substring(limit) + "\n";
@@ -171,135 +84,329 @@ function splitMessage(text, limit = 1800) {
   return chunks;
 }
 
-// ─── Help Handler ─────────────────────────────────────────────────────────
-async function handleHelp(msg) {
-  await msg.reply(`
-🗺️ **Smart Route AI — User Guide**
+// ─── Safe defer helpers ───────────────────────────────────────────────────
+async function safeDefer(interaction, type = "update") {
+  try {
+    if (interaction.deferred || interaction.replied) return true;
+    if (type === "reply") await interaction.deferReply();
+    else await interaction.deferUpdate();
+    return true;
+  } catch (e) {
+    if (e.code === 10062 || e.code === 40060) return false;
+    throw e;
+  }
+}
 
-\`!route [origin] → [destination]\`
-> Compare highway vs non-highway routes, show BOT/Ferry fees
-> *Ex:* \`!route Quận 1 → Sân bay Tân Sơn Nhất\`
+async function safeUpdate(interaction, data) {
+  try {
+    await interaction.update(data);
+    return true;
+  } catch (e) {
+    if (e.code === 10062 || e.code === 40060) return false;
+    throw e;
+  }
+}
 
-\`!check [origin] → [destination]\`
-> Check congestion + AI Game Theory for optimal route
-> *Ex:* \`!check Quận 1 → Vũng Tàu\`
+// ─── Help message ─────────────────────────────────────────────────────────
+const HELP_TEXT = `
+🗺️ **Smart Route AI — Hướng dẫn sử dụng**
 
-\`!traffic [location]\`
-> Quick report on traffic status at a specific area
-> *Ex:* \`!traffic Ngã tư Hàng Xanh\`
+**Slash Commands (gõ / để dùng):**
+\`/route [origin] [destination]\` — So sánh lộ trình, hiển thị phí BOT/Phà
+\`/check [origin] [destination]\` — Kiểm tra tắc đường + AI Game Theory
+\`/traffic [location]\` — Kiểm tra giao thông tại một khu vực
 
-\`!help\` — Show this guide
+**Prefix Commands (gõ ! để dùng):**
+\`!route A → B\`, \`!check A → B\`, \`!traffic [địa điểm]\`, \`!help\`
 
-💡 *Bot supports natural language (Ex: !check from A to B)*
-💡 *Cache 5 mins • AI Game Theory triggered automatically when CI ≥ 1.25*
-`.trim());
+💡 *Slash commands hỗ trợ autocomplete địa điểm*
+💡 *Cache 5 phút • AI Game Theory kích hoạt khi CI ≥ 1.25*
+`.trim();
+
+// ─── Prefix command handler ───────────────────────────────────────────────
+async function handlePrefixCommand(msg) {
+  const content = msg.content.trim();
+
+  let parsed = null;
+  let intent = null;
+
+  if (content.startsWith("!route")) {
+    intent = "route";
+    parsed = parseRouteCommand(content);
+  } else if (content.startsWith("!check")) {
+    intent = "check";
+    parsed = parseCheckCommand(content);
+  } else if (content.startsWith("!traffic")) {
+    intent = "traffic";
+    parsed = parseTrafficCommand(content);
+  } else if (content.startsWith("!help")) {
+    return msg.reply(HELP_TEXT);
+  }
+
+  // AI fallback nếu regex thất bại
+  if (!parsed && intent) {
+    await msg.react("🤖");
+    const aiResult = await parseCommandWithAI(content);
+    if (aiResult && aiResult.intent !== "unknown") {
+      intent = aiResult.intent;
+      parsed = { origin: aiResult.origin, dest: aiResult.destination };
+    }
+  }
+
+  if (!parsed) {
+    return msg.reply("❓ Không hiểu lệnh. Thử: `!check A → B` hoặc dùng `/check` với autocomplete.");
+  }
+
+  await msg.react("⏳");
+
+  try {
+    if (intent === "route" || intent === "check") {
+      const [originLocations, destLocations] = await Promise.all([
+        searchLocations(parsed.origin),
+        searchLocations(parsed.dest),
+      ]);
+
+      if (!originLocations?.length || !destLocations?.length) {
+        return msg.reply("❌ Không tìm thấy một hoặc cả hai địa điểm.");
+      }
+
+      const row1 = new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId(`select_origin_${intent}`)
+          .setPlaceholder(`Chọn điểm đi cho "${parsed.origin}"`)
+          .addOptions(originLocations)
+      );
+      const row2 = new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId(`select_dest_${intent}`)
+          .setPlaceholder(`Chọn điểm đến cho "${parsed.dest}"`)
+          .addOptions(destLocations)
+      );
+      const row3 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`confirm_route_${intent}`)
+          .setLabel("Xác nhận & Kiểm tra")
+          .setStyle(ButtonStyle.Primary)
+      );
+
+      await msg.reply({
+        content: `Vui lòng xác nhận điểm đi và điểm đến cho lộ trình **${parsed.origin} → ${parsed.dest}**:`,
+        components: [row1, row2, row3],
+      });
+    } else if (intent === "traffic") {
+      const locations = await searchLocations(parsed.origin);
+      if (!locations?.length) return msg.reply("❌ Không tìm thấy địa điểm nào.");
+
+      const row = new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId("select_traffic_loc")
+          .setPlaceholder("Chọn địa điểm chính xác...")
+          .addOptions(locations)
+      );
+
+      await msg.reply({
+        content: `Vui lòng chọn địa điểm cho **"${parsed.origin}"**:`,
+        components: [row],
+      });
+    }
+  } catch (e) {
+    console.error(`[Prefix ${intent} Error]`, e.message);
+    await msg.reply(`⚠️ Lỗi: ${e.message}`);
+  }
 }
 
 // ─── Message handler ──────────────────────────────────────────────────────
 client.on("messageCreate", async (msg) => {
   if (msg.author.bot) return;
-  if (!isAllowed(msg)) return;
+  if (!isAllowedMsg(msg)) return;
+  if (!msg.content.startsWith("!")) return;
 
-  const content = msg.content.trim();
-  if (!content.startsWith("!")) return; // Skip normal messages
-
-  // Rate limit check
   if (isOnCooldown(msg.author.id)) {
-    return msg.reply("⏱ Please wait a few seconds before the next command.");
+    return msg.reply("⏱ Vui lòng chờ vài giây trước lệnh tiếp theo.");
   }
   setCooldown(msg.author.id);
 
-  // Handle all commands via smart filter
-  return handleSmartCommand(msg);
+  return handlePrefixCommand(msg);
 });
 
-// ─── Interaction handler for Select Menus and Buttons ─────────────────────
+// ─── Interaction handler ──────────────────────────────────────────────────
 client.on("interactionCreate", async (interaction) => {
-  if (interaction.channelId !== ALLOWED_CHANNEL_ID || interaction.user.id !== ALLOWED_USER_ID) return;
 
-  if (interaction.isStringSelectMenu()) {
-    if (interaction.customId === 'select_traffic_loc') {
-      const value = interaction.values[0];
-
-      const selectedOption = interaction.message.components[0].components[0].options.find(o => o.value === value);
-      const locationName = selectedOption ? selectedOption.label : "Địa điểm đã chọn";
-
-      await interaction.update({ content: `⏳ Đang kiểm tra giao thông cho: **${locationName}**...`, components: [] });
-
-      try {
-        const coords = await resolveLocationValue(value);
-        if (!coords) {
-          return interaction.editReply({ content: "❌ Không thể lấy tọa độ của địa điểm này." });
-        }
-
-        const route = await getAreaTraffic(coords, locationName);
-        await interaction.editReply({ content: formatTrafficReply(route, locationName) });
-      } catch (e) {
-        console.error("[Traffic Select error]", e);
-        await interaction.editReply({ content: `⚠️ Lỗi: ${e.message}` });
-      }
-    } else if (interaction.customId.startsWith('select_origin_') || interaction.customId.startsWith('select_dest_')) {
-      const value = interaction.values[0];
-      const rowIdx = interaction.customId.startsWith('select_origin_') ? 0 : 1;
-      
-      const newComponents = interaction.message.components.map((row, index) => {
-        const actionRow = ActionRowBuilder.from(row);
-        if (index === rowIdx) {
-          const select = actionRow.components[0];
-          select.setOptions(
-            select.options.map(opt => ({
-              ...opt.data,
-              default: opt.data.value === value
-            }))
-          );
-        }
-        return actionRow;
-      });
-      
-      await interaction.update({ components: newComponents });
-    }
-  } else if (interaction.isButton()) {
-    if (!interaction.customId.startsWith('confirm_route_')) return;
-    
-    const originSelect = interaction.message.components[0].components[0];
-    const destSelect = interaction.message.components[1].components[0];
-    
-    const originSelected = originSelect.options.find(o => o.default);
-    const destSelected = destSelect.options.find(o => o.default);
-    
-    if (!originSelected || !destSelected) {
-      return interaction.reply({ content: "⚠️ Vui lòng chọn CẢ điểm đi và điểm đến trước khi xác nhận!", ephemeral: true });
-    }
-    
-    const intent = interaction.customId.replace('confirm_route_', '');
-    
-    await interaction.update({ content: `⏳ Đang xử lý lộ trình từ **${originSelected.label}** đến **${destSelected.label}**...`, components: [] });
-    
+  // ── 1. Autocomplete — phải phản hồi ngay, KHÔNG defer ─────────────────
+  if (interaction.isAutocomplete()) {
+    const focusedValue = interaction.options.getFocused();
+    if (!focusedValue || focusedValue.length < 2) return interaction.respond([]);
     try {
-      const originCoords = await resolveLocationValue(originSelected.value);
-      const destCoords = await resolveLocationValue(destSelected.value);
-      
-      const parsedFake = { origin: originSelected.label, dest: destSelected.label };
-      
-      if (intent === "route") {
-        const result = await getBestRoute(originCoords, destCoords);
-        const chunks = splitMessage(formatReply(result, parsedFake));
+      const locations = await searchLocations(focusedValue);
+      await interaction.respond(
+        locations.slice(0, 25).map(loc => ({
+          name: `${loc.label}${loc.description ? ` (${loc.description})` : ""}`.substring(0, 100),
+          value: loc.value,
+        }))
+      );
+    } catch (e) {
+      console.error("[Autocomplete Error]", e.message);
+      try { await interaction.respond([]); } catch { }
+    }
+    return;
+  }
+
+  // ── 2. Slash Commands ──────────────────────────────────────────────────
+  if (interaction.isChatInputCommand()) {
+    if (!isAllowedInteraction(interaction)) {
+      // Phải defer trước khi editReply
+      const ok = await safeDefer(interaction, "reply");
+      if (!ok) return;
+      return interaction.editReply("❌ Bạn không có quyền sử dụng lệnh này.");
+    }
+
+    const ok = await safeDefer(interaction, "reply");
+    if (!ok) return;
+
+    const { commandName } = interaction;
+
+    try {
+      if (commandName === "traffic") {
+        const value = interaction.options.getString("location");
+        const coords = await resolveLocationValue(value);
+        if (!coords) return interaction.editReply("❌ Không thể lấy tọa độ địa điểm này.");
+        const result = await getAreaTraffic(coords, value);
+        const chunks = splitMessage(formatTrafficReply(result, value));
         for (const [i, chunk] of chunks.entries()) {
           if (i === 0) await interaction.editReply({ content: chunk });
           else await interaction.followUp({ content: chunk });
         }
-      } else if (intent === "check") {
-        const result = await getDetailedCheck(originCoords, destCoords);
-        const chunks = splitMessage(formatCheckReply(result, parsedFake));
+      } else if (commandName === "check" || commandName === "route") {
+        const originVal = interaction.options.getString("origin");
+        const destVal = interaction.options.getString("destination");
+        const [start, end] = await Promise.all([
+          resolveLocationValue(originVal),
+          resolveLocationValue(destVal),
+        ]);
+        if (!start || !end) {
+          return interaction.editReply("❌ Không tìm thấy tọa độ điểm đi hoặc điểm đến.");
+        }
+
+        const parsedNames = { origin: originVal, dest: destVal };
+        const res = commandName === "route"
+          ? await getBestRoute(start, end)
+          : await getDetailedCheck(start, end);
+        const chunks = splitMessage(
+          commandName === "route"
+            ? formatReply(res, parsedNames)
+            : formatCheckReply(res, parsedNames)
+        );
         for (const [i, chunk] of chunks.entries()) {
           if (i === 0) await interaction.editReply({ content: chunk });
           else await interaction.followUp({ content: chunk });
         }
       }
     } catch (e) {
-      console.error("[Route Confirm error]", e);
-      await interaction.editReply({ content: `⚠️ Lỗi: ${e.message}` });
+      console.error(`[Slash /${commandName} Error]`, e.message);
+      try { await interaction.editReply(`⚠️ Lỗi: ${e.message}`); } catch { }
     }
+    return;
+  }
+
+  // ── 3. Message Components (Dropdown & Button) ─────────────────────────
+  if (!interaction.isMessageComponent()) return;
+  if (!isAllowedInteraction(interaction)) return;
+
+  try {
+    // ── Traffic dropdown ─────────────────────────────────────────────────
+    if (interaction.customId === "select_traffic_loc") {
+      const ok = await safeDefer(interaction, "update");
+      if (!ok) return;
+
+      const val = interaction.values[0];
+      const opt = interaction.message.components[0].components[0].options.find(o => o.value === val);
+      const name = opt?.label ?? "Địa điểm đã chọn";
+
+      await interaction.editReply({
+        content: `⏳ Đang kiểm tra giao thông cho: **${name}**...`,
+        components: [],
+      });
+
+      try {
+        const coords = await resolveLocationValue(val);
+        if (!coords) return interaction.editReply({ content: "❌ Không thể lấy tọa độ." });
+        const result = await getAreaTraffic(coords, name);
+        await interaction.editReply({ content: formatTrafficReply(result, name) });
+      } catch (e) {
+        console.error("[Traffic Select Error]", e.message);
+        await interaction.editReply({ content: `⚠️ Lỗi: ${e.message}` });
+      }
+    }
+
+    // ── Origin / Dest dropdown — chỉ cập nhật UI, dùng update() trực tiếp ─
+    else if (
+      interaction.customId.startsWith("select_origin_") ||
+      interaction.customId.startsWith("select_dest_")
+    ) {
+      const val = interaction.values[0];
+      const isOrigin = interaction.customId.startsWith("select_origin_");
+
+      const newComponents = interaction.message.components.map((row, i) => {
+        const builder = ActionRowBuilder.from(row.toJSON());
+        if ((isOrigin && i === 0) || (!isOrigin && i === 1)) {
+          builder.components[0].setOptions(
+            row.components[0].options.map(o => ({ ...o, default: o.value === val }))
+          );
+        }
+        return builder;
+      });
+
+      await safeUpdate(interaction, { components: newComponents });
+    }
+
+    // ── Confirm button ───────────────────────────────────────────────────
+    else if (interaction.customId.startsWith("confirm_route_")) {
+      const ok = await safeDefer(interaction, "update");
+      if (!ok) return;
+
+      const originOpt = interaction.message.components[0].components[0].options.find(o => o.default);
+      const destOpt = interaction.message.components[1].components[0].options.find(o => o.default);
+
+      if (!originOpt || !destOpt) {
+        return interaction.followUp({
+          content: "⚠️ Vui lòng chọn cả điểm đi và điểm đến trước khi xác nhận!",
+          ephemeral: true,
+        });
+      }
+
+      const intent = interaction.customId.replace("confirm_route_", "");
+      await interaction.editReply({
+        content: `⏳ Đang xử lý lộ trình từ **${originOpt.label}** đến **${destOpt.label}**...`,
+        components: [],
+      });
+
+      try {
+        const [start, end] = await Promise.all([
+          resolveLocationValue(originOpt.value),
+          resolveLocationValue(destOpt.value),
+        ]);
+        const parsedNames = { origin: originOpt.label, dest: destOpt.label };
+
+        const res = intent === "route"
+          ? await getBestRoute(start, end)
+          : await getDetailedCheck(start, end);
+        const chunks = splitMessage(
+          intent === "route"
+            ? formatReply(res, parsedNames)
+            : formatCheckReply(res, parsedNames)
+        );
+        for (const [i, chunk] of chunks.entries()) {
+          if (i === 0) await interaction.editReply({ content: chunk });
+          else await interaction.followUp({ content: chunk });
+        }
+      } catch (e) {
+        console.error("[Confirm Button Error]", e.message);
+        await interaction.editReply({ content: `⚠️ Lỗi: ${e.message}` });
+      }
+    }
+  } catch (err) {
+    if (err.code === 10062 || err.code === 40060) return;
+    console.error("[Critical Interaction Error]", err);
   }
 });
 
@@ -311,7 +418,7 @@ client.once("clientReady", () => {
 });
 
 // ─── Graceful shutdown ────────────────────────────────────────────────────
-process.on("SIGINT",  () => { client.destroy(); process.exit(0); });
+process.on("SIGINT", () => { client.destroy(); process.exit(0); });
 process.on("SIGTERM", () => { client.destroy(); process.exit(0); });
 process.on("unhandledRejection", (reason) => {
   console.error("[UNHANDLED]", reason);
