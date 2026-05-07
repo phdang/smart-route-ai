@@ -63,11 +63,15 @@ export async function searchMapboxLocations(query) {
     const data = await res.json();
     if (!data.features) return [];
     
-    return data.features.map(f => ({
-      label: f.text.substring(0, 100),
-      description: (f.place_name || "").substring(0, 100),
-      value: `mb:${f.center[0]},${f.center[1]}`
-    }));
+    return data.features.map(f => {
+      const label = f.text.substring(0, 100);
+      const address = (f.place_name || "").substring(0, 100);
+      return {
+        label,
+        description: address,
+        value: `mb:${f.center[0]},${f.center[1]}|${label}`
+      };
+    });
   } catch (e) {
     return [];
   }
@@ -77,36 +81,114 @@ export async function searchLocations(query) {
   const apiKey = process.env.VIETMAP_API_KEY;
   if (!apiKey) return searchMapboxLocations(query);
 
-  const url = `https://maps.vietmap.vn/api/search/v3?apikey=${apiKey}&text=${encodeURIComponent(query)}`;
+  // Vietmap Search v4 (Geocode v4): Better for full address search
+  const proximity = "10.762622,106.660172"; // TPHCM focus
+  const url = `https://maps.vietmap.vn/api/search/v4?apikey=${apiKey}&text=${encodeURIComponent(query)}&focus=${proximity}&display_type=5`;
+  
   try {
     const res = await fetch(url);
-    const data = await res.json();
-    if (!data || data.length === 0) return searchMapboxLocations(query);
+    const result = await res.json();
+    const data = result.data || [];
     
-    // Return max 10 options
-    return data.slice(0, 10).map(item => ({
-      label: item.name.substring(0, 100) || query.substring(0, 100),
-      description: (item.address || item.display || "Địa điểm Việt Nam").substring(0, 100),
-      value: `vm:${item.ref_id}` // prefix to know it's vietmap
-    }));
+    // If Search v4 returns nothing, try Autocomplete v4 as a second chance
+    if (!data || data.length === 0) {
+      const autoUrl = `https://maps.vietmap.vn/api/autocomplete/v4?apikey=${apiKey}&text=${encodeURIComponent(query)}&display_type=5`;
+      const autoRes = await fetch(autoUrl);
+      const autoResult = await autoRes.json();
+      const autoData = autoResult.data || [];
+      if (!autoData || autoData.length === 0) return searchMapboxLocations(query);
+      data.push(...autoData.slice(0, 5));
+    }
+    
+    // Return max 10 options for Discord
+    return data.slice(0, 10).map(item => {
+      const lat = item.location?.lat;
+      const lng = item.location?.lng;
+      let value = `vm:`;
+      if (lat && lng) value += `${lat},${lng}|`;
+      value += item.id || item.ref_id;
+      
+      const label = (item.name || item.display || query).substring(0, 100);
+      const display = item.display || item.address || label;
+      
+      // Pack the best display name into the value for cleaner extraction later
+      const finalValue = `${value}|${display || label}`;
+
+      return {
+        label,
+        description: (display === label ? "" : display).substring(0, 100),
+        value: finalValue.substring(0, 100)
+      };
+    });
   } catch (e) {
+    console.error("[Vietmap Search Error]", e.message);
     return searchMapboxLocations(query);
   }
 }
 
+async function vietmapGeocode(query) {
+  const apiKey = process.env.VIETMAP_API_KEY;
+  if (!apiKey) return null;
+  const proximity = "10.762622,106.660172";
+  const url = `https://maps.vietmap.vn/api/search/v4?apikey=${apiKey}&text=${encodeURIComponent(query)}&focus=${proximity}&limit=1`;
+  try {
+    const res = await fetch(url);
+    const result = await res.json();
+    const item = result.data?.[0];
+    if (item && item.location) {
+      return [item.location.lng, item.location.lat];
+    }
+  } catch (e) {
+    console.warn("[Vietmap Geocode Error]", e.message);
+  }
+  return null;
+}
+
 export async function resolveLocationValue(value) {
+  if (!value) return null;
+  
   if (value.startsWith("mb:")) {
     const parts = value.replace("mb:", "").split(",");
     return [parseFloat(parts[0]), parseFloat(parts[1])]; // [lng, lat]
   } else if (value.startsWith("vm:")) {
-    const ref_id = value.replace("vm:", "");
+    const raw = value.replace("vm:", "");
+    
+    // Check if coordinates are packed: lat,lng|id
+    if (raw.includes("|")) {
+      const [coordsPart, idPart] = raw.split("|");
+      const coords = coordsPart.split(",");
+      if (coords.length === 2) {
+        const lat = parseFloat(coords[0]);
+        const lng = parseFloat(coords[1]);
+        if (!isNaN(lat) && !isNaN(lng)) {
+          return [lng, lat];
+        }
+      }
+    }
+
+    // Fallback: Fetch from Place v4 API
+    const ref_id = raw.includes("|") ? raw.split("|")[1] : raw;
     const apiKey = process.env.VIETMAP_API_KEY;
-    const url = `https://maps.vietmap.vn/api/place/v3?apikey=${apiKey}&refid=${ref_id}`;
-    const res = await fetch(url);
-    const data = await res.json();
-    return [data.lng, data.lat];
+    const url = `https://maps.vietmap.vn/api/place/v4?apikey=${apiKey}&refid=${ref_id}`;
+    try {
+      const res = await fetch(url);
+      const result = await res.json();
+      const data = result.data && result.data.length > 0 ? result.data[0] : null;
+      if (data && data.location) {
+        return [data.location.lng, data.location.lat];
+      }
+      // Last fallback to v3
+      const v3Url = `https://maps.vietmap.vn/api/place/v3?apikey=${apiKey}&refid=${ref_id}`;
+      const v3Res = await fetch(v3Url);
+      const v3Data = await v3Res.json();
+      return [v3Data.lng, v3Data.lat];
+    } catch (e) {
+      console.error("[Vietmap Resolve Error]", e.message);
+    }
   }
-  return null;
+  
+  // Plain text resolution
+  return await vietmapGeocode(value) || await geocode(value);
 }
 
 // ─── Fetch with Timeout ───────────────────────────────────────────────────
