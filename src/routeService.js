@@ -87,17 +87,18 @@ export async function searchLocations(query) {
   
   try {
     const res = await fetch(url);
-    const result = await res.json();
-    const data = result.data || [];
+    let data = await res.json();
+    if (!Array.isArray(data)) data = data.data || [];
     
     // If Search v4 returns nothing, try Autocomplete v4 as a second chance
     if (!data || data.length === 0) {
       const autoUrl = `https://maps.vietmap.vn/api/autocomplete/v4?apikey=${apiKey}&text=${encodeURIComponent(query)}&display_type=5`;
       const autoRes = await fetch(autoUrl);
-      const autoResult = await autoRes.json();
-      const autoData = autoResult.data || [];
+      let autoData = await autoRes.json();
+      if (!Array.isArray(autoData)) autoData = autoData.data || [];
+      
       if (!autoData || autoData.length === 0) return searchMapboxLocations(query);
-      data.push(...autoData.slice(0, 5));
+      data = autoData.slice(0, 10);
     }
     
     // Return max 10 options for Discord
@@ -167,16 +168,27 @@ export async function resolveLocationValue(value) {
     }
 
     // Fallback: Fetch from Place v4 API
-    const ref_id = raw.includes("|") ? raw.split("|")[1] : raw;
+    // Extract ref_id: if 3 parts (lat,lng|id|label), it's the 2nd. If 2 parts (id|label), it's the 1st.
+    const parts = raw.split("|");
+    const ref_id = parts.length >= 3 ? parts[1] : parts[0];
+    
     const apiKey = process.env.VIETMAP_API_KEY;
     const url = `https://maps.vietmap.vn/api/place/v4?apikey=${apiKey}&refid=${ref_id}`;
     try {
       const res = await fetch(url);
-      const result = await res.json();
-      const data = result.data && result.data.length > 0 ? result.data[0] : null;
-      if (data && data.location) {
-        return [data.location.lng, data.location.lat];
+      const data = await res.json();
+      
+      // Place v4 returns the object directly with lat, lng
+      if (data && data.lat && data.lng) {
+        return [data.lng, data.lat];
       }
+      
+      // Fallback for v3 or if wrapped in data array
+      const item = Array.isArray(data.data) ? data.data[0] : (data.data || null);
+      if (item && item.location) {
+        return [item.location.lng, item.location.lat];
+      }
+      
       // Last fallback to v3
       const v3Url = `https://maps.vietmap.vn/api/place/v3?apikey=${apiKey}&refid=${ref_id}`;
       const v3Res = await fetch(v3Url);
