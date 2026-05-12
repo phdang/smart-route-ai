@@ -292,7 +292,7 @@ client.on("interactionCreate", async (interaction) => {
     
     // FIX: If the value already starts with a prefix, the user has already selected a choice.
     // We return an empty list to hide the autocomplete menu so they can press Enter.
-    if (focusedValue.startsWith("vm:") || focusedValue.startsWith("mb:")) {
+    if (focusedValue.startsWith("vm:") || focusedValue.startsWith("mb:") || focusedValue.startsWith("vmc:")) {
       return interaction.respond([]);
     }
 
@@ -329,7 +329,7 @@ client.on("interactionCreate", async (interaction) => {
         const query = interaction.options.getString("location");
 
         // FIX: If query already has a prefix, it's a resolved value from a dropdown or Mapbox autocomplete
-        if (query.startsWith("vm:") || query.startsWith("mb:")) {
+        if (query.startsWith("vm:") || query.startsWith("mb:") || query.startsWith("vmc:")) {
           const coords = await resolveLocationValue(query);
           if (coords) {
             const label = getCleanLabel(query);

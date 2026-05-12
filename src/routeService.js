@@ -3,6 +3,7 @@
 // Uses Directions API (driving-traffic) and Geocoding API
 
 import fetch from "node-fetch";
+import crypto from "crypto";
 import { cacheGet, cacheSet } from "./cache.js";
 import { score, scoreGroup } from "./engine.js";
 import { analyzeRoutesWithGameTheory } from "./llmService.js";
@@ -102,25 +103,36 @@ export async function searchLocations(query) {
     }
     
     // Return max 10 options for Discord
-    return data.slice(0, 10).map(item => {
+    const options = await Promise.all(data.slice(0, 10).map(async (item) => {
       const lat = item.location?.lat;
       const lng = item.location?.lng;
-      let value = `vm:`;
-      if (lat && lng) value += `${lat},${lng}|`;
-      value += item.id || item.ref_id;
+      let val = `vm:`;
+      if (lat && lng) val += `${lat},${lng}|`;
+      val += item.id || item.ref_id;
       
       const label = (item.name || item.display || query).substring(0, 100);
       const display = item.display || item.address || label;
       
       // Pack the best display name into the value for cleaner extraction later
-      const finalValue = `${value}|${display || label}`;
+      let finalValue = `${val}|${display || label}`;
+
+      // Discord limit is 100 chars. If exceeded, use a cached short ID.
+      if (finalValue.length > 100) {
+        const hash = crypto.createHash('md5').update(finalValue).digest('hex').substring(0, 16);
+        const cacheKey = `vmid:${hash}`;
+        await cacheSet(cacheKey, finalValue);
+        // Include label for clean display/fallback, truncated to fit 100 chars total
+        finalValue = `vmc:${hash}|${label}`.substring(0, 100);
+      }
 
       return {
         label,
         description: (display === label ? "" : display).substring(0, 100),
-        value: finalValue.substring(0, 100)
+        value: finalValue
       };
-    });
+    }));
+    
+    return options;
   } catch (e) {
     console.error("[Vietmap Search Error]", e.message);
     return searchMapboxLocations(query);
@@ -148,15 +160,28 @@ async function vietmapGeocode(query) {
 export async function resolveLocationValue(value) {
   if (!value) return null;
   
-  if (value.startsWith("mb:")) {
-    const parts = value.replace("mb:", "").split(",");
+  let workingValue = value;
+
+  // 1. Handle Cached IDs (vmc: prefix)
+  if (value.startsWith("vmc:")) {
+    const hash = value.replace("vmc:", "").split("|")[0];
+    const cached = await cacheGet(`vmid:${hash}`);
+    if (cached) {
+      console.log(`[Resolve] Using cached value for ${hash}`);
+      workingValue = cached;
+    }
+  }
+  
+  if (workingValue.startsWith("mb:")) {
+    const parts = workingValue.replace("mb:", "").split("|")[0].split(",");
     return [parseFloat(parts[0]), parseFloat(parts[1])]; // [lng, lat]
-  } else if (value.startsWith("vm:")) {
-    const raw = value.replace("vm:", "");
+  } else if (workingValue.startsWith("vm:")) {
+    const raw = workingValue.replace("vm:", "");
     
     // Check if coordinates are packed: lat,lng|id
     if (raw.includes("|")) {
-      const [coordsPart, idPart] = raw.split("|");
+      const parts = raw.split("|");
+      const coordsPart = parts[0];
       const coords = coordsPart.split(",");
       if (coords.length === 2) {
         const lat = parseFloat(coords[0]);
@@ -170,7 +195,8 @@ export async function resolveLocationValue(value) {
     // Fallback: Fetch from Place v4 API
     // Extract ref_id: if 3 parts (lat,lng|id|label), it's the 2nd. If 2 parts (id|label), it's the 1st.
     const parts = raw.split("|");
-    const ref_id = parts.length >= 3 ? parts[1] : parts[0];
+    const ref_id = (parts.length >= 2 && !parts[0].includes(",")) ? parts[0] : 
+                   (parts.length >= 3 ? parts[1] : parts[0]);
     
     const apiKey = process.env.VIETMAP_API_KEY;
     const url = `https://maps.vietmap.vn/api/place/v4?apikey=${apiKey}&refid=${ref_id}`;
@@ -199,8 +225,9 @@ export async function resolveLocationValue(value) {
     }
   }
   
-  // Plain text resolution
-  return await vietmapGeocode(value) || await geocode(value);
+  // Plain text resolution - extract label if it's a packed value
+  const query = workingValue.replace(/^(vm|mb|vmc):/, "").split("|").pop();
+  return await vietmapGeocode(query) || await geocode(query);
 }
 
 // ─── Fetch with Timeout ───────────────────────────────────────────────────
