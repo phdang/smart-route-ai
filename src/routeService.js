@@ -79,8 +79,33 @@ export async function searchMapboxLocations(query) {
 }
 
 export async function searchLocations(query) {
+  const start = Date.now();
+  console.log(`[Search] Query: "${query}"`);
+
+  // Use a promise race to enforce a 2.5s timeout for Discord
+  const timeoutPromise = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error("Search Timeout")), 2500)
+  );
+
+  try {
+    const result = await Promise.race([
+      internalSearchLocations(query),
+      timeoutPromise
+    ]);
+    console.log(`[Search] Done in ${Date.now() - start}ms, results: ${result.length}`);
+    return result;
+  } catch (e) {
+    console.error(`[Search Error] ${e.message} after ${Date.now() - start}ms`);
+    return [];
+  }
+}
+
+async function internalSearchLocations(query) {
   const apiKey = process.env.VIETMAP_API_KEY;
-  if (!apiKey) return searchMapboxLocations(query);
+  if (!apiKey) {
+    console.log("[Search] No Vietmap key, using Mapbox");
+    return searchMapboxLocations(query);
+  }
 
   // Vietmap Search v4 (Geocode v4): Better for full address search
   const proximity = "10.762622,106.660172"; // TPHCM focus
@@ -98,7 +123,10 @@ export async function searchLocations(query) {
       let autoData = await autoRes.json();
       if (!Array.isArray(autoData)) autoData = autoData.data || [];
       
-      if (!autoData || autoData.length === 0) return searchMapboxLocations(query);
+      if (!autoData || autoData.length === 0) {
+        console.log("[Search] Vietmap returned no results, falling back to Mapbox");
+        return searchMapboxLocations(query);
+      }
       data = autoData.slice(0, 10);
     }
     
@@ -120,7 +148,8 @@ export async function searchLocations(query) {
       if (finalValue.length > 100) {
         const hash = crypto.createHash('md5').update(finalValue).digest('hex').substring(0, 16);
         const cacheKey = `vmid:${hash}`;
-        await cacheSet(cacheKey, finalValue);
+        // Fire and forget cacheSet to save time
+        cacheSet(cacheKey, finalValue).catch(err => console.warn(`[Cache Error] ${err.message}`));
         // Include label for clean display/fallback, truncated to fit 100 chars total
         finalValue = `vmc:${hash}|${label}`.substring(0, 100);
       }

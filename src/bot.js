@@ -288,6 +288,8 @@ client.on("interactionCreate", async (interaction) => {
   // ── 1. Autocomplete — trả lời trực tiếp, KHÔNG defer ──────────────────
   if (interaction.isAutocomplete()) {
     const focusedValue = interaction.options.getFocused();
+    console.log(`[Autocomplete] User: ${interaction.user.tag}, Query: "${focusedValue}"`);
+
     if (!focusedValue || focusedValue.length < 2) return interaction.respond([]);
     
     // FIX: If the value already starts with a prefix, the user has already selected a choice.
@@ -304,6 +306,7 @@ client.on("interactionCreate", async (interaction) => {
           value: String(loc.value).substring(0, 100),
         }))
       );
+      console.log(`[Autocomplete] Responded with ${locations.length} options`);
     } catch (e) {
       console.error("[Autocomplete Error]", e.message);
       try { await interaction.respond([]); } catch { }
@@ -511,7 +514,7 @@ client.on("interactionCreate", async (interaction) => {
 });
 
 // ─── Startup ──────────────────────────────────────────────────────────────
-client.once("clientReady", () => {
+client.once("ready", () => {
   console.log(`✅ Smart Route AI online: ${client.user.tag}`);
   console.log(`📌 Channel: ${ALLOWED_CHANNEL_ID}`);
   console.log(`👤 User:    ${ALLOWED_USER_ID}`);
@@ -521,8 +524,13 @@ client.once("clientReady", () => {
 process.on("SIGINT", () => { client.destroy(); process.exit(0); });
 process.on("SIGTERM", () => { client.destroy(); process.exit(0); });
 process.on("unhandledRejection", (reason) => {
-  console.error("[UNHANDLED]", reason);
+  console.error("[UNHANDLED REJECTION]", reason);
 });
 
-await initRedis();
-client.login(process.env.DISCORD_TOKEN);
+try {
+  await initRedis();
+  await client.login(process.env.DISCORD_TOKEN);
+} catch (err) {
+  console.error("[FATAL] Startup failed:", err);
+  process.exit(1);
+}

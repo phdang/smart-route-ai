@@ -1,0 +1,65 @@
+Fetching: https://maps.vietmap.vn/api/search/v4?apikey=7b1a00854e15356f6e6fd23b24012e957ec9f32ed9ae1d41&text=c%E1%BA%A7u%20v%C6%B0%E1%BB%A3t%20g%C3%B2%20m%C3%A2y%2C%20b%C3%ACnh%20t%C3%A2n%20tphcm&focus=10.762622,106.660172&display_type=5
+Time taken: 110ms
+Data length: 1
+First item: {
+  "ref_id": "geocode:RAkPYDcwcHd5XFcECk4DAwEAHQMDBVpJAQJQAQQBVAJUAAFUV1YHBVdbBAQeB1MBBBsCAwIBSwQHVwEbBgcHVlAEA1NWCwYDAgcOCCCDj5VYRkSkgsyPlkFDSqHTFg_uk0leA1YbXgFRCgVbAVIDBFdWDAYeXQNSBAMCBQVUGVFUBVsUBAJcC11zB1wWXQ",
+  "distance": 8.76510322747319,
+  "address": "Phường Bình Tân,Thành Phố Hồ Chí Minh",
+  "name": "Cầu Vượt Gò Mây",
+  "display": "Cầu Vượt Gò Mây Phường Bình Tân,Thành Phố Hồ Chí Minh",
+  "boundaries": [
+    {
+      "type": 2,
+      "id": 4876,
+      "name": "Bình Tân",
+      "prefix": "Phường",
+      "full_name": "Phường Bình Tân"
+    },
+    {
+      "type": 0,
+      "id": 12,
+      "name": "Hồ Chí Minh",
+      "prefix": "Thành Phố",
+      "full_name": "Thành Phố Hồ Chí Minh"
+    }
+  ],
+  "categories": [],
+  "entry_points": [],
+  "data_old": {
+    "ref_id": "geocode:RAkPYDcwcHd5XFcECk4DAwEAHQMDBVpJAQJQAQQBVAJUAAFUV1YHBVdbBAQeB1MBBBsCAwIBSwQHVwEbBgcHVlAEA1NWCwYDAgcOCCCDj5VYRkSkgsyPlkFDSqHTFg_uk0leA1YbXgFRCgVbAVIDBFdWDAYeXQNSBAMCBQVUGVFUBVsUBAJcC11hFEUA",
+    "distance": 8.76510322747319,
+    "address": "Phường Bình Hưng Hòa B,Quận Bình Tân,Thành Phố Hồ Chí Minh",
+    "name": "Cầu Vượt Gò Mây",
+    "display": "Cầu Vượt Gò Mây Phường Bình Hưng Hòa B,Quận Bình Tân,Thành Phố Hồ Chí Minh",
+    "boundaries": [
+      {
+        "type": 2,
+        "id": 396556,
+        "name": "Bình Hưng Hòa B",
+        "prefix": "Phường",
+        "full_name": "Phường Bình Hưng Hòa B"
+      },
+      {
+        "type": 1,
+        "id": 3340,
+        "name": "Bình Tân",
+        "prefix": "Quận",
+        "full_name": "Quận Bình Tân"
+      },
+      {
+        "type": 0,
+        "id": 12,
+        "name": "Hồ Chí Minh",
+        "prefix": "Thành Phố",
+        "full_name": "Thành Phố Hồ Chí Minh"
+      }
+    ],
+    "categories": [],
+    "entry_points": [],
+    "data_old": null,
+    "data_new": null,
+    "partner_code": null
+  },
+  "data_new": null,
+  "partner_code": null
+}

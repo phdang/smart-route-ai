@@ -14,7 +14,7 @@ pm2 stop traffic-bot 2>/dev/null || true
 pm2 delete traffic-bot 2>/dev/null || true
 
 # Khởi động bot
-pm2 start src/bot.js --name "traffic-bot" --watch --ignore-watch="node_modules"
+pm2 start src/bot.js --name "traffic-bot"
 
 # Hiển thị trạng thái
 pm2 status traffic-bot
