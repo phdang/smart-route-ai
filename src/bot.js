@@ -50,57 +50,6 @@ const client = new Client({
   ],
 });
 
-// ─── Session Store ────────────────────────────────────────────────────────
-// Lưu options theo messageId để rebuild component từ data gốc (không dùng toJSON)
-// Structure: messageId → { intent, originOptions, destOptions, selectedOrigin, selectedDest }
-const SESSION_TTL = 14 * 60 * 1000; // 14 phút (Discord component timeout là 15 phút)
-const sessions = new Map();
-
-function createSession(messageId, data) {
-  sessions.set(messageId, { ...data, selectedOrigin: null, selectedDest: null });
-  setTimeout(() => sessions.delete(messageId), SESSION_TTL);
-}
-
-function getSession(messageId) {
-  return sessions.get(messageId) ?? null;
-}
-
-// ─── Build route components từ session data ───────────────────────────────
-function buildRouteComponents(session) {
-  const row1 = new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId(`select_origin_${session.intent}`)
-      .setPlaceholder("Chọn điểm đi")
-      .addOptions(
-        session.originOptions.map(o => ({
-          ...o,
-          default: o.value === session.selectedOrigin,
-        }))
-      )
-  );
-
-  const row2 = new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId(`select_dest_${session.intent}`)
-      .setPlaceholder("Chọn điểm đến")
-      .addOptions(
-        session.destOptions.map(o => ({
-          ...o,
-          default: o.value === session.selectedDest,
-        }))
-      )
-  );
-
-  const row3 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`confirm_route_${session.intent}`)
-      .setLabel("Xác nhận & Kiểm tra")
-      .setStyle(ButtonStyle.Primary)
-  );
-
-  return [row1, row2, row3];
-}
-
 // ─── Auth guard ───────────────────────────────────────────────────────────
 function isAllowedMsg(msg) {
   return msg.channelId === ALLOWED_CHANNEL_ID && msg.author.id === ALLOWED_USER_ID;
@@ -158,23 +107,9 @@ async function safeDefer(interaction, type = "update") {
   }
 }
 
-async function safeUpdate(interaction, data) {
-  try {
-    if (interaction.deferred || interaction.replied) {
-      await interaction.editReply(data);
-    } else {
-      await interaction.update(data);
-    }
-    return true;
-  } catch (e) {
-    if (e.code === 10062 || e.code === 40060) return false;
-    throw e;
-  }
-}
-
 // ─── Help text ────────────────────────────────────────────────────────────
 const HELP_TEXT = `
-🗺️ **Smart Route AI — Hướng dẫn sử dụng**
+1. 🗺️ **Smart Route AI — Hướng dẫn sử dụng**
 
 **Slash Commands (gõ / ):**
 \`/route [origin] [destination]\` — So sánh lộ trình, hiển thị phí BOT/Phà
@@ -184,7 +119,7 @@ const HELP_TEXT = `
 **Prefix Commands (gõ ! ):**
 \`!route A → B\` • \`!check A → B\` • \`!traffic [địa điểm]\` • \`!help\`
 
-💡 *Slash commands hỗ trợ autocomplete địa điểm*
+💡 *Bot tự động chọn địa điểm khớp nhất (Auto-match)*
 💡 *Cache 5 phút • AI Game Theory kích hoạt khi CI ≥ 1.25*
 `.trim();
 
@@ -219,7 +154,7 @@ async function handlePrefixCommand(msg) {
   }
 
   if (!parsed) {
-    return msg.reply("❓ Không hiểu lệnh. Thử: `!check A → B` hoặc dùng `/check` với autocomplete.");
+    return msg.reply("❓ Không hiểu lệnh. Thử: `!check A -> B` hoặc dùng `/check`.");
   }
 
   await msg.react("⏳");
@@ -235,32 +170,56 @@ async function handlePrefixCommand(msg) {
         return msg.reply("❌ Không tìm thấy một hoặc cả hai địa điểm.");
       }
 
-      const sessionData = { intent, originOptions, destOptions };
-      const components = buildRouteComponents({ ...sessionData, selectedOrigin: null, selectedDest: null });
+      const bestOrigin = originOptions[0];
+      const bestDest = destOptions[0];
+      
+      const originLabel = bestOrigin.label;
+      const destLabel = bestDest.label;
 
-      const sentMsg = await msg.reply({
-        content: `Vui lòng xác nhận điểm đi và điểm đến cho lộ trình **${parsed.origin} → ${parsed.dest}**:`,
-        components,
-      });
+      await msg.reply(`⏳ Đang xử lý lộ trình từ **${originLabel}** đến **${destLabel}**...`);
 
-      // Lưu session với messageId thật sau khi gửi
-      createSession(sentMsg.id, sessionData);
+      try {
+        const [start, end] = await Promise.all([
+          resolveLocationValue(bestOrigin.value),
+          resolveLocationValue(bestDest.value),
+        ]);
+        
+        const parsedNames = { origin: originLabel, dest: destLabel };
+        const res = intent === "route"
+          ? await getBestRoute(start, end)
+          : await getDetailedCheck(start, end);
+          
+        const chunks = splitMessage(
+          intent === "route"
+            ? formatReply(res, parsedNames)
+            : formatCheckReply(res, parsedNames)
+        );
+        for (const chunk of chunks) {
+          await msg.channel.send(chunk);
+        }
+      } catch (e) {
+        console.error(`[Prefix ${intent} Execution Error]`, e.message);
+        await msg.reply(`⚠️ Lỗi: ${e.message}`);
+      }
 
     } else if (intent === "traffic") {
       const locations = await searchLocations(parsed.origin);
       if (!locations?.length) return msg.reply("❌ Không tìm thấy địa điểm nào.");
 
-      await msg.reply({
-        content: `Vui lòng chọn địa điểm cho **"${parsed.origin}"**:`,
-        components: [
-          new ActionRowBuilder().addComponents(
-            new StringSelectMenuBuilder()
-              .setCustomId("select_traffic_loc")
-              .setPlaceholder("Chọn địa điểm chính xác...")
-              .addOptions(locations)
-          ),
-        ],
-      });
+      const bestMatch = locations[0];
+      const label = bestMatch.label;
+      
+      await msg.reply(`⏳ Đang kiểm tra giao thông cho: **${label}**...`);
+      
+      try {
+        const coords = await resolveLocationValue(bestMatch.value);
+        if (!coords) return msg.reply("❌ Không thể xác định tọa độ.");
+        const result = await getAreaTraffic(coords, label);
+        await msg.reply({ content: formatTrafficReply(result, label) });
+      } catch (e) {
+        console.error("[Prefix Traffic Error]", e.message);
+        await msg.reply(`⚠️ Lỗi: ${e.message}`);
+      }
     }
   } catch (e) {
     console.error(`[Prefix ${intent} Error]`, e.message);
@@ -285,15 +244,11 @@ client.on("messageCreate", async (msg) => {
 // ─── Interaction handler ──────────────────────────────────────────────────
 client.on("interactionCreate", async (interaction) => {
 
-  // ── 1. Autocomplete — trả lời trực tiếp, KHÔNG defer ──────────────────
+  // ── 1. Autocomplete ──────────────────────────────────────────────────
   if (interaction.isAutocomplete()) {
     const focusedValue = interaction.options.getFocused();
-    console.log(`[Autocomplete] User: ${interaction.user.tag}, Query: "${focusedValue}"`);
-
     if (!focusedValue || focusedValue.length < 2) return interaction.respond([]);
     
-    // FIX: If the value already starts with a prefix, the user has already selected a choice.
-    // We return an empty list to hide the autocomplete menu so they can press Enter.
     if (focusedValue.startsWith("vm:") || focusedValue.startsWith("mb:") || focusedValue.startsWith("vmc:")) {
       return interaction.respond([]);
     }
@@ -306,7 +261,6 @@ client.on("interactionCreate", async (interaction) => {
           value: String(loc.value).substring(0, 100),
         }))
       );
-      console.log(`[Autocomplete] Responded with ${locations.length} options`);
     } catch (e) {
       console.error("[Autocomplete Error]", e.message);
       try { await interaction.respond([]); } catch { }
@@ -331,41 +285,51 @@ client.on("interactionCreate", async (interaction) => {
       if (commandName === "traffic") {
         const query = interaction.options.getString("location");
 
-        // FIX: If query already has a prefix, it's a resolved value from a dropdown or Mapbox autocomplete
-        if (query.startsWith("vm:") || query.startsWith("mb:") || query.startsWith("vmc:")) {
-          const coords = await resolveLocationValue(query);
-          if (coords) {
-            const label = getCleanLabel(query);
-            const result = await getAreaTraffic(coords, label);
-            return interaction.editReply({ content: formatTrafficReply(result, label) });
-          }
+        let bestMatchValue = query;
+        let label = getCleanLabel(query);
+
+        if (!query.startsWith("vm:") && !query.startsWith("mb:") && !query.startsWith("vmc:")) {
+          const locations = await searchLocations(query);
+          if (!locations?.length) return interaction.editReply("❌ Không tìm thấy địa điểm nào.");
+          bestMatchValue = locations[0].value;
+          label = locations[0].label;
         }
 
-        // Otherwise search (this happens if user types or selects the 'display text' autocomplete)
-        const locations = await searchLocations(query);
-        if (!locations?.length) {
-          return interaction.editReply("❌ Không tìm thấy địa điểm nào.");
-        }
-
-        // Always use the first result, no more dropdowns
-        const coords = await resolveLocationValue(locations[0].value);
-        const label = getCleanLabel(locations[0].value);
+        const coords = await resolveLocationValue(bestMatchValue);
         const result = await getAreaTraffic(coords, label);
         return interaction.editReply({ content: formatTrafficReply(result, label) });
+
       } else if (commandName === "check" || commandName === "route") {
-        const originVal = interaction.options.getString("origin");
-        const destVal = interaction.options.getString("destination");
+        let originVal = interaction.options.getString("origin");
+        let destVal = interaction.options.getString("destination");
+        
+        // Auto-match if raw strings
+        if (!originVal.includes("|") && !originVal.startsWith("mb:") && !originVal.startsWith("vm:")) {
+          const locs = await searchLocations(originVal);
+          if (locs?.length) originVal = locs[0].value;
+        }
+        if (!destVal.includes("|") && !destVal.startsWith("mb:") && !destVal.startsWith("vm:")) {
+          const locs = await searchLocations(destVal);
+          if (locs?.length) destVal = locs[0].value;
+        }
+
         const [start, end] = await Promise.all([
           resolveLocationValue(originVal),
           resolveLocationValue(destVal),
         ]);
+        
         if (!start || !end) {
           return interaction.editReply("❌ Không tìm thấy tọa độ điểm đi hoặc điểm đến.");
         }
-        const parsedNames = { origin: getCleanLabel(originVal), dest: getCleanLabel(destVal) };
+        
+        const originLabel = getCleanLabel(originVal);
+        const destLabel = getCleanLabel(destVal);
+        const parsedNames = { origin: originLabel, dest: destLabel };
+        
         const res = commandName === "route"
           ? await getBestRoute(start, end)
           : await getDetailedCheck(start, end);
+          
         const chunks = splitMessage(
           commandName === "route"
             ? formatReply(res, parsedNames)
@@ -383,138 +347,14 @@ client.on("interactionCreate", async (interaction) => {
     return;
   }
 
-  // ── 3. Message Components ──────────────────────────────────────────────
-  if (!interaction.isMessageComponent()) return;
-  if (!isAllowedInteraction(interaction)) return;
-
-  try {
-    // ── Traffic dropdown ─────────────────────────────────────────────────
-    if (interaction.customId === "select_traffic_loc") {
-      const ok = await safeDefer(interaction, "update");
-      if (!ok) return;
-
-      const val = interaction.values[0];
-      const opt = interaction.message.components[0].components[0].options.find(o => o.value === val);
-      const name = opt?.label ?? "Địa điểm đã chọn";
-
-      await interaction.editReply({
-        content: `⏳ Đang kiểm tra giao thông cho: **${name}**...`,
-        components: [],
-      });
-
-      try {
-        const coords = await resolveLocationValue(val);
-        if (!coords) return interaction.editReply({ content: "❌ Không thể lấy tọa độ." });
-        const result = await getAreaTraffic(coords, name);
-        await interaction.editReply({ content: formatTrafficReply(result, name) });
-      } catch (e) {
-        console.error("[Traffic Select Error]", e.message);
-        await interaction.editReply({ content: `⚠️ Lỗi: ${e.message}` });
-      }
-    }
-
-    // ── Origin / Dest dropdown ────────────────────────────────────────────
-    // Rebuild hoàn toàn từ session data gốc — KHÔNG dùng toJSON()
-    else if (
-      interaction.customId.startsWith("select_origin_") ||
-      interaction.customId.startsWith("select_dest_")
-    ) {
-      const session = getSession(interaction.message.id);
-      if (!session) {
-        return safeUpdate(interaction, {
-          content: "⚠️ Phiên đã hết hạn (quá 14 phút). Vui lòng gửi lại lệnh.",
-          components: [],
-        });
-      }
-
-      const val = interaction.values[0];
-      const isOrigin = interaction.customId.startsWith("select_origin_");
-
-      // Cập nhật selection trong session
-      if (isOrigin) session.selectedOrigin = val;
-      else session.selectedDest = val;
-
-      // Rebuild components từ data gốc — luôn valid
-      const newComponents = buildRouteComponents(session);
-      await safeUpdate(interaction, { components: newComponents });
-    }
-
-    // ── Confirm button ────────────────────────────────────────────────────
-    else if (interaction.customId.startsWith("confirm_route_")) {
-      const ok = await safeDefer(interaction, "update");
-      if (!ok) return;
-
-      const session = getSession(interaction.message.id);
-
-      let originValue, originLabel, destValue, destLabel;
-
-      if (session?.selectedOrigin && session?.selectedDest) {
-        // Lấy từ session (chính xác nhất)
-        originValue = session.selectedOrigin;
-        destValue = session.selectedDest;
-        originLabel = session.originOptions.find(o => o.value === originValue)?.label ?? originValue;
-        destLabel = session.destOptions.find(o => o.value === destValue)?.label ?? destValue;
-      } else {
-        // Fallback: đọc từ message components
-        const originOpt = interaction.message.components[0]?.components[0]?.options?.find(o => o.default);
-        const destOpt = interaction.message.components[1]?.components[0]?.options?.find(o => o.default);
-        if (!originOpt || !destOpt) {
-          return interaction.followUp({
-            content: "⚠️ Vui lòng chọn cả điểm đi và điểm đến trước khi xác nhận!",
-            ephemeral: true,
-          });
-        }
-        originValue = originOpt.value; originLabel = originOpt.label;
-        destValue = destOpt.value; destLabel = destOpt.label;
-      }
-
-      if (!originValue || !destValue) {
-        return interaction.followUp({
-          content: "⚠️ Vui lòng chọn cả điểm đi và điểm đến trước khi xác nhận!",
-          ephemeral: true,
-        });
-      }
-
-      const intent = interaction.customId.replace("confirm_route_", "");
-      await interaction.editReply({
-        content: `⏳ Đang xử lý lộ trình từ **${originLabel}** đến **${destLabel}**...`,
-        components: [],
-      });
-
-      try {
-        const [start, end] = await Promise.all([
-          resolveLocationValue(originValue),
-          resolveLocationValue(destValue),
-        ]);
-        const parsedNames = { origin: originLabel, dest: destLabel };
-        const res = intent === "route"
-          ? await getBestRoute(start, end)
-          : await getDetailedCheck(start, end);
-        const chunks = splitMessage(
-          intent === "route"
-            ? formatReply(res, parsedNames)
-            : formatCheckReply(res, parsedNames)
-        );
-        for (const [i, chunk] of chunks.entries()) {
-          if (i === 0) await interaction.editReply({ content: chunk });
-          else await interaction.followUp({ content: chunk });
-        }
-
-        // Dọn session sau khi hoàn tất
-        sessions.delete(interaction.message.id);
-      } catch (e) {
-        console.error("[Confirm Button Error]", e.message);
-        await interaction.editReply({ content: `⚠️ Lỗi: ${e.message}` });
-      }
-    }
-  } catch (err) {
-    if (err.code === 10062 || err.code === 40060) return;
-    console.error("[Critical Interaction Error]", err);
+  // 3. Message Components (Disabled - Now using Auto-match)
+  if (interaction.isMessageComponent()) {
+    try { await interaction.reply({ content: "❌ Chế độ Dropdown đã được thay bằng Tự động khớp (Auto-match). Vui lòng dùng lệnh trực tiếp.", ephemeral: true }); } catch {}
   }
 });
 
 // ─── Startup ──────────────────────────────────────────────────────────────
-client.once("ready", () => {
+client.once("clientReady", () => {
   console.log(`✅ Smart Route AI online: ${client.user.tag}`);
   console.log(`📌 Channel: ${ALLOWED_CHANNEL_ID}`);
   console.log(`👤 User:    ${ALLOWED_USER_ID}`);
@@ -527,10 +367,15 @@ process.on("unhandledRejection", (reason) => {
   console.error("[UNHANDLED REJECTION]", reason);
 });
 
-try {
-  await initRedis();
-  await client.login(process.env.DISCORD_TOKEN);
-} catch (err) {
-  console.error("[FATAL] Startup failed:", err);
-  process.exit(1);
+async function startBot() {
+  try {
+    await initRedis();
+    await client.login(process.env.DISCORD_TOKEN);
+    console.log("[Bot] Login successful");
+  } catch (err) {
+    console.error("[FATAL] Startup failed:", err);
+    setTimeout(() => process.exit(1), 2000);
+  }
 }
+
+startBot();
